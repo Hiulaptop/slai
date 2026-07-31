@@ -207,6 +207,68 @@ describe("CliProxyAdapter", () => {
     });
   });
 
+  it("wraps successful response body read failures", async () => {
+    const apiKey = "ok-response-secret";
+    const response = new Response(null, { status: 200 });
+    vi.spyOn(response, "text").mockRejectedValue(
+      new Error(`failed to read ${apiKey}`),
+    );
+    const fetch = vi.fn(async () => response);
+    const adapter = new TestAdapter({
+      baseUrl: "https://proxy.test",
+      apiKey,
+      fetch,
+    });
+
+    const error = await adapter
+      .generate(validRequest)
+      .catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(CliProxyError);
+    expect(error).toMatchObject({
+      provider: "openai",
+      status: 200,
+      message: expect.stringContaining("[REDACTED]"),
+    });
+
+    if (!(error instanceof CliProxyError)) {
+      throw new Error("Expected adapter to throw CliProxyError");
+    }
+
+    expect(error.message).not.toContain(apiKey);
+  });
+
+  it("wraps error response body read failures", async () => {
+    const apiKey = "error-response-secret";
+    const response = new Response(null, { status: 503 });
+    vi.spyOn(response, "text").mockRejectedValue(
+      new Error(`failed to read ${apiKey}`),
+    );
+    const fetch = vi.fn(async () => response);
+    const adapter = new TestAdapter({
+      baseUrl: "https://proxy.test",
+      apiKey,
+      fetch,
+    });
+
+    const error = await adapter
+      .generate(validRequest)
+      .catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(CliProxyError);
+    expect(error).toMatchObject({
+      provider: "openai",
+      status: 503,
+      message: expect.stringContaining("[REDACTED]"),
+    });
+
+    if (!(error instanceof CliProxyError)) {
+      throw new Error("Expected adapter to throw CliProxyError");
+    }
+
+    expect(error.message).not.toContain(apiKey);
+  });
+
   it("rejects a streaming response without a body", async () => {
     const fetch = vi.fn(async () => new Response(null, { status: 200 }));
     const adapter = new TestAdapter({

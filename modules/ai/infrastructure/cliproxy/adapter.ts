@@ -121,7 +121,7 @@ export abstract class CliProxyAdapter {
   }
 
   private async readJson(response: Response): Promise<unknown> {
-    const text = await response.text();
+    const text = await this.readResponseText(response);
 
     try {
       return JSON.parse(text) as unknown;
@@ -136,7 +136,7 @@ export abstract class CliProxyAdapter {
   }
 
   private async readErrorMessage(response: Response): Promise<string> {
-    const text = await response.text();
+    const text = await this.readResponseText(response);
 
     try {
       const body: unknown = JSON.parse(text);
@@ -161,6 +161,14 @@ export abstract class CliProxyAdapter {
     }
 
     return text || response.statusText || "Unknown provider error";
+  }
+
+  private async readResponseText(response: Response): Promise<string> {
+    try {
+      return await response.text();
+    } catch (error) {
+      throw this.wrapError(error, response.status);
+    }
   }
 
   private wrapError(error: unknown, status?: number): CliProxyError {
