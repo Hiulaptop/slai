@@ -1,0 +1,153 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum SlideGenerationStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum LogLevel {
+  DEBUG
+  INFO
+  WARN
+  ERROR
+  FATAL
+}
+
+model User {
+  id           String     @id @default(uuid()) @db.Char(36)
+  email        String     @unique @db.VarChar(320)
+  passwordHash String     @db.VarChar(255)
+  status       UserStatus @default(ACTIVE)
+  lastLoginAt  DateTime?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  sessions         AuthSession[]
+  slideGenerations SlideGeneration[]
+  apiRequestLogs   ApiRequestLog[]
+  systemLogs       SystemLog[]
+
+  @@index([status])
+  @@map("users")
+}
+
+model AuthSession {
+  id               String    @id @default(uuid()) @db.Char(36)
+  userId           String    @db.Char(36)
+  refreshTokenHash String    @unique @db.Char(64)
+  userAgent        String?   @db.VarChar(1000)
+  ipAddress        String?   @db.VarChar(45)
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+  @@index([expiresAt])
+  @@map("auth_sessions")
+}
+
+model SlideGeneration {
+  id               String                @id @default(uuid()) @db.Char(36)
+  userId           String?               @db.Char(36)
+  status           SlideGenerationStatus @default(PENDING)
+  title            String?               @db.VarChar(500)
+  provider         String                @db.VarChar(50)
+  modelId          String                @db.VarChar(255)
+  requestPayload   Json
+  responsePayload  Json?
+  htmlContent      String?               @db.LongText
+  finishReason     String?               @db.VarChar(100)
+  promptTokens     Int?
+  completionTokens Int?
+  totalTokens      Int?
+  errorCode        String?               @db.VarChar(100)
+  errorMessage     String?               @db.Text
+  startedAt        DateTime?
+  completedAt      DateTime?
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+
+  user           User?           @relation(fields: [userId], references: [id], onDelete: SetNull)
+  apiRequestLogs ApiRequestLog[]
+  systemLogs     SystemLog[]
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+  @@index([provider, modelId])
+  @@map("slide_generations")
+}
+
+model ApiRequestLog {
+  id                String   @id @default(uuid()) @db.Char(36)
+  requestId         String   @unique @db.VarChar(100)
+  userId            String?  @db.Char(36)
+  slideGenerationId String?  @db.Char(36)
+  method            String   @db.VarChar(10)
+  path              String   @db.VarChar(2048)
+  queryParams       Json?
+  requestHeaders    Json?
+  requestBody       Json?
+  statusCode        Int?
+  responseHeaders   Json?
+  responseBody      Json?
+  ipAddress         String?  @db.VarChar(45)
+  userAgent         String?  @db.VarChar(1000)
+  durationMs        Int?
+  errorCode         String?  @db.VarChar(100)
+  errorMessage      String?  @db.Text
+  createdAt         DateTime @default(now())
+
+  user            User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
+  slideGeneration SlideGeneration? @relation(fields: [slideGenerationId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([slideGenerationId])
+  @@index([method, createdAt])
+  @@index([statusCode, createdAt])
+  @@index([createdAt])
+  @@map("api_request_logs")
+}
+
+model SystemLog {
+  id                String   @id @default(uuid()) @db.Char(36)
+  level             LogLevel
+  message           String   @db.Text
+  service           String?  @db.VarChar(100)
+  module            String?  @db.VarChar(100)
+  event             String?  @db.VarChar(100)
+  requestId         String?  @db.VarChar(100)
+  userId            String?  @db.Char(36)
+  slideGenerationId String?  @db.Char(36)
+  context           Json?
+  errorName         String?  @db.VarChar(255)
+  errorStack        String?  @db.LongText
+  createdAt         DateTime @default(now())
+
+  user            User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
+  slideGeneration SlideGeneration? @relation(fields: [slideGenerationId], references: [id], onDelete: SetNull)
+
+  @@index([level, createdAt])
+  @@index([requestId])
+  @@index([userId, createdAt])
+  @@index([slideGenerationId])
+  @@index([service, createdAt])
+  @@index([createdAt])
+  @@map("system_logs")
+}
