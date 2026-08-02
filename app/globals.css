@@ -1,26 +1,136 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Colors — see Docs/DESIGN.md */
+  --color-ink-black: #17191c;
+  --color-paper-white: #ffffff;
+  --color-mist-gray: #f2f2f3;
+  --color-fog-white: #fafafb;
+  --color-slate-gray: #777b86;
+  --color-ash-gray: #979799;
+  --color-smoke-gray: #a3a6af;
+  --color-blush-peach: #fbe1d1;
+  --color-sienna-brown: #5d2a1a;
+
+  --background: var(--color-paper-white);
+  --foreground: var(--color-ink-black);
+
+  /* Typography — scale (line-height/letter-spacing companions kept as raw vars,
+     not merged into Tailwind's utility scale to avoid guessing at a leading- / tracking-
+     naming convention DESIGN.md doesn't itself define) */
+  --text-caption: 15px;
+  --leading-caption: 1.5;
+  --text-body: 17px;
+  --leading-body: 1.35;
+  --text-body-lg: 20px;
+  --leading-body-lg: 1.35;
+  --text-subheading: 22px;
+  --leading-subheading: 1.5;
+  --text-heading-sm: 26px;
+  --leading-heading-sm: 1.18;
+  --tracking-heading-sm: -0.23px;
+  --text-heading: 44px;
+  --leading-heading: 1.3;
+  --tracking-heading: -0.66px;
+  --text-heading-lg: 64px;
+  --leading-heading-lg: 1.3;
+  --tracking-heading-lg: -0.96px;
+  --text-display: 90px;
+  --leading-display: 1.3;
+  --tracking-display: -2.25px;
+
+  /* Spacing (4px base unit). Kept as plain custom properties (usable via
+     var(--spacing-24) or arbitrary values like p-[var(--spacing-24)]) rather than
+     Tailwind @theme --spacing-* keys: Tailwind v4's numeric spacing scale is a
+     multiplier of a single --spacing base, so redefining --spacing-4 etc. here
+     would silently change the meaning of every plain p-4/gap-8/etc. elsewhere. */
+  --spacing-4: 4px;
+  --spacing-8: 8px;
+  --spacing-12: 12px;
+  --spacing-16: 16px;
+  --spacing-20: 20px;
+  --spacing-24: 24px;
+  --spacing-28: 28px;
+  --spacing-32: 32px;
+  --spacing-40: 40px;
+  --spacing-64: 64px;
+  --spacing-80: 80px;
+  --spacing-96: 96px;
+  --spacing-124: 124px;
+  --spacing-128: 128px;
+  --spacing-160: 160px;
+  --page-max-width: 1200px;
+  --section-gap: 80px;
+  --card-padding: 20px;
+  --element-gap: 8px;
+
+  /* Border radius */
+  --radius-cards: 24px;
+  --radius-images: 12px;
+  --radius-inputs: 16px;
+  --radius-buttons: 9999px;
+  --radius-smallcards: 16px;
+  --radius-elevatedcards: 20px;
+
+  /* Shadows */
+  --shadow-subtle: oklab(0 0 0 / 0.05) 0px 0px 0px 1px, rgba(0, 0, 0, 0.08) 0px 4px 24px 0px;
+  --shadow-subtle-2: oklab(0 0 0 / 0.05) 0px 0px 0px 1px, rgba(0, 0, 0, 0.1) 0px 8px 40px 0px;
+  --shadow-subtle-3:
+    rgba(4, 23, 43, 0.05) 0px 0px 0px 1px, rgba(0, 0, 0, 0.1) 0px 20px 25px -5px,
+    rgba(0, 0, 0, 0.1) 0px 8px 10px -6px;
+
+  /* Surfaces */
+  --surface-canvas: #ffffff;
+  --surface-card-mist: #f2f2f3;
+  --surface-section-fog: #fafafb;
+  --surface-accent-blush: #fbe1d1;
+  --surface-elevated-white: #ffffff;
 }
 
 @theme inline {
+  /* Fonts — loaded via next/font/google in app/layout.tsx */
+  --font-signifier: var(--font-source-serif-4);
+  --font-sohne: var(--font-inter);
+
+  /* Colors -> Tailwind utilities (bg-ink-black, text-slate-gray, ...) */
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+  --color-ink-black: var(--color-ink-black);
+  --color-paper-white: var(--color-paper-white);
+  --color-mist-gray: var(--color-mist-gray);
+  --color-fog-white: var(--color-fog-white);
+  --color-slate-gray: var(--color-slate-gray);
+  --color-ash-gray: var(--color-ash-gray);
+  --color-smoke-gray: var(--color-smoke-gray);
+  --color-blush-peach: var(--color-blush-peach);
+  --color-sienna-brown: var(--color-sienna-brown);
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  /* Type scale -> Tailwind utilities (text-heading, text-caption, ...) */
+  --text-caption: var(--text-caption);
+  --text-body: var(--text-body);
+  --text-body-lg: var(--text-body-lg);
+  --text-subheading: var(--text-subheading);
+  --text-heading-sm: var(--text-heading-sm);
+  --text-heading: var(--text-heading);
+  --text-heading-lg: var(--text-heading-lg);
+  --text-display: var(--text-display);
+
+  /* Radii -> Tailwind utilities (rounded-cards, rounded-buttons, ...) */
+  --radius-cards: var(--radius-cards);
+  --radius-images: var(--radius-images);
+  --radius-inputs: var(--radius-inputs);
+  --radius-buttons: var(--radius-buttons);
+  --radius-smallcards: var(--radius-smallcards);
+  --radius-elevatedcards: var(--radius-elevatedcards);
+
+  /* Shadows -> Tailwind utilities (shadow-subtle, shadow-subtle-2, shadow-subtle-3) */
+  --shadow-subtle: var(--shadow-subtle);
+  --shadow-subtle-2: var(--shadow-subtle-2);
+  --shadow-subtle-3: var(--shadow-subtle-3);
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sohne);
 }
