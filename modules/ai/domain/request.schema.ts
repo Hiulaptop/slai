@@ -89,6 +89,8 @@ export const requestSchema = z
     temperature: z.number().min(0).max(2).default(1),
 
     maxOutputTokens: z.number().int().positive().optional(),
+
+    responseFormat: responseFormatSchema.optional(),
   })
   .strict();
 

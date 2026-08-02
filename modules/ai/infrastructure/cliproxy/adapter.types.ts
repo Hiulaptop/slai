@@ -62,6 +62,7 @@ export interface OpenAIRequestPayload {
   messages: OpenAIMessage[];
   temperature: number;
   max_tokens?: number;
+  response_format?: { type: "json_object" };
   stream: boolean;
   stream_options?: {
     include_usage: true;
@@ -94,5 +95,6 @@ export interface GeminiRequestPayload {
   generationConfig: {
     temperature: number;
     maxOutputTokens?: number;
+    responseMimeType?: "application/json";
   };
 }

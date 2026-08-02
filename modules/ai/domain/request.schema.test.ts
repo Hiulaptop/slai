@@ -32,6 +32,14 @@ describe("requestSchema", () => {
 
     expect(result.success).toBe(false);
   });
+
+  it("accepts normalized JSON response format", () => {
+    expect(requestSchema.parse({ ...validRequest, responseFormat: "json_object" }).responseFormat).toBe("json_object");
+  });
+
+  it("rejects unsupported response formats", () => {
+    expect(requestSchema.safeParse({ ...validRequest, responseFormat: "json_schema" }).success).toBe(false);
+  });
 });
 
 describe("base64MediaSourceSchema", () => {

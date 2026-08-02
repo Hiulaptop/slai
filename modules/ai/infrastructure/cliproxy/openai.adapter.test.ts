@@ -43,6 +43,13 @@ const textRequest: AIRequest = {
 };
 
 describe("OpenAICliProxyAdapter", () => {
+  it("maps normalized JSON response format", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({ model: "gpt", choices: [{ message: { content: "{}" }, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }));
+    const adapter = new OpenAICliProxyAdapter({ baseUrl: "https://proxy.test", apiKey: "secret", fetch });
+    await adapter.generate({ ...textRequest, responseFormat: "json_object" });
+    expect(JSON.parse(fetch.mock.calls[0][1]?.body as string)).toMatchObject({ response_format: { type: "json_object" } });
+  });
+
   it("maps a text-only request and normalizes a completion", async () => {
     const fetch = vi.fn(async () =>
       Response.json({

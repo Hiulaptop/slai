@@ -44,6 +44,13 @@ const request: AIRequest = {
 };
 
 describe("GeminiCliProxyAdapter", () => {
+  it("maps normalized JSON response format", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({ candidates: [{ content: { parts: [{ text: "{}" }] }, finishReason: "STOP" }], usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 } }));
+    const adapter = new GeminiCliProxyAdapter({ baseUrl: "https://proxy.test", apiKey: "secret", fetch });
+    await adapter.generate({ ...request, responseFormat: "json_object" });
+    expect(JSON.parse(fetch.mock.calls[0][1]?.body as string)).toMatchObject({ generationConfig: { responseMimeType: "application/json" } });
+  });
+
   it("maps system instructions, roles, mixed parts, URL encoding, and generation config", async () => {
     const mixedRequest: AIRequest = {
       ...request,
