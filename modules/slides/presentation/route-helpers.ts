@@ -26,13 +26,22 @@ export function requireFile(form: FormData, name: string): File {
   return value;
 }
 
+export function requireFiles(form: FormData, name: string): File[] {
+  const values = form.getAll(name);
+  if (!values.length || values.some((value) => !(value instanceof File))) {
+    throw new SlideError("INVALID_INPUT", `Missing ${name} files`);
+  }
+  return values as File[];
+}
+
 export function requireText(form: FormData, name: string): string {
   const value = form.get(name);
   if (typeof value !== "string" || !value.trim()) throw new SlideError("INVALID_INPUT", `Missing ${name}`);
   return value;
 }
 
-export function presentationResponse(generation: StoredPresentation) {
+export function presentationResponse(input: StoredPresentation | { generation: StoredPresentation; undoableSlideNumbers: number[] }) {
+  const generation = "generation" in input ? input.generation : input;
   return {
     id: generation.id,
     title: generation.title,
@@ -40,6 +49,7 @@ export function presentationResponse(generation: StoredPresentation) {
     outline: generation.approvedOutline,
     html: generation.htmlContent,
     revisionNumber: generation.currentRevisionNumber,
+    undoableSlideNumbers: "generation" in input ? input.undoableSlideNumbers : [],
     createdAt: generation.createdAt,
     updatedAt: generation.updatedAt,
     completedAt: generation.completedAt,
@@ -74,7 +84,8 @@ function presentationSummaryResponse(presentation: PresentationSummary) {
 }
 
 export function slideErrorResponse(error: unknown): NextResponse {
-  if (error instanceof ZodError || (error instanceof SlideError && error.code === "INVALID_INPUT")) return jsonError("INVALID_INPUT", "Invalid request", 400);
+  if (error instanceof ZodError) return jsonError("INVALID_INPUT", error.issues[0]?.message ?? "Invalid request", 400);
+  if (error instanceof SlideError && error.code === "INVALID_INPUT") return jsonError("INVALID_INPUT", error.message, 400);
   if (error instanceof AuthError) return jsonError("UNAUTHORIZED", "Unauthorized", 401);
   if (error instanceof SlideError) {
     const status = error.code === "NOT_FOUND" ? 404 : error.code === "CONFLICT" ? 409 : 502;

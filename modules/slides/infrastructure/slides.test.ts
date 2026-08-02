@@ -11,6 +11,13 @@ describe("slide composition", () => {
   });
   it("rejects invalid configuration without exposing the key", async () => {
     vi.stubEnv("CLIPROXY_PROVIDER", "unsupported"); vi.stubEnv("CLIPROXY_BASE_URL", "https://proxy.test"); vi.stubEnv("CLIPROXY_API_KEY", "very-secret-key"); vi.stubEnv("SLIDE_MODEL_ID", "model");
-    await expect(import("./slides")).rejects.not.toThrow("very-secret-key");
+    const { slideService } = await import("./slides");
+    expect(() => slideService.provider).toThrow();
+    expect(() => slideService.provider).not.toThrow("very-secret-key");
+  });
+  it("loads non-AI operations without provider configuration", async () => {
+    vi.stubEnv("CLIPROXY_PROVIDER", ""); vi.stubEnv("CLIPROXY_BASE_URL", ""); vi.stubEnv("CLIPROXY_API_KEY", ""); vi.stubEnv("SLIDE_MODEL_ID", "");
+    const { slideService } = await import("./slides");
+    expect(slideService.list).toBeTypeOf("function");
   });
 });
