@@ -5,10 +5,49 @@ import { editSystemPrompt, generationSystemPrompt, OUTLINE_SYSTEM_PROMPT } from 
 import { SlideError } from "../domain/slide.errors";
 import { editResponseSchema, outlineSchema, type BatchEdit, type SlideOutline } from "../domain/slide.schemas";
 import { fileMetadata, toFilePart } from "../domain/uploads";
-import type { AIGenerator, SlideRepository, StoredPresentation } from "./slide.ports";
+import { decodePresentationCursor, encodePresentationCursor } from "../domain/presentation-cursor";
+import type { PresentationListQuery } from "../domain/slide.schemas";
+import { PresentationAccessPolicy } from "./presentation-access.policy";
+import type { AIGenerator, PresentationPage, SlideRepository } from "./slide.ports";
 
 export class SlideService {
-  constructor(private repository: SlideRepository, private ai: AIGenerator, readonly provider: string, readonly modelId: string) {}
+  private readonly access: PresentationAccessPolicy;
+
+  constructor(private repository: SlideRepository, private ai: AIGenerator, readonly provider: string, readonly modelId: string) {
+    this.access = new PresentationAccessPolicy(repository);
+  }
+
+  async list(userId: string, query: PresentationListQuery): Promise<PresentationPage> {
+    const cursor = query.cursor
+      ? decodePresentationCursor(query.cursor)
+      : undefined;
+    const rows = await this.repository.listOwned({
+      userId,
+      limit: query.limit,
+      ...(cursor ? { cursor } : {}),
+    });
+    const hasMore = rows.length > query.limit;
+    const items = rows.slice(0, query.limit);
+    const last = items.at(-1);
+    return {
+      items,
+      nextCursor:
+        hasMore && last
+          ? encodePresentationCursor({ createdAt: last.createdAt, id: last.id })
+          : null,
+    };
+  }
+
+  detail(userId: string, generationId: string) {
+    return this.access.require(generationId, userId, "read");
+  }
+
+  async delete(userId: string, generationId: string): Promise<void> {
+    await this.access.require(generationId, userId, "delete");
+    if (!(await this.repository.deleteOwned({ id: generationId, userId }))) {
+      throw new SlideError("CONFLICT", "Presentation changed concurrently");
+    }
+  }
   async suggestOutline(report: File, signal?: AbortSignal): Promise<SlideOutline> {
     const response = await this.callAI({ modelId: this.modelId, messages: [{ role: "system", content: OUTLINE_SYSTEM_PROMPT }, { role: "user", content: [{ type: "text", text: "Create an outline from this report." }, await toFilePart(report, "report")] }], temperature: 0.2, responseFormat: "json_object" }, signal);
     return parseModelJson(response.text, outlineSchema);
@@ -27,7 +66,7 @@ export class SlideService {
     }
   }
   async edit(userId: string, input: BatchEdit, signal?: AbortSignal) {
-    const generation = await this.requireComplete(input.generationId, userId);
+    const generation = await this.access.require(input.generationId, userId, "mutate");
     const outline = outlineSchema.parse(generation.approvedOutline);
     const numbers = input.edits.map((edit) => edit.slideNumber);
     if (numbers.some((number) => number > outline.slides.length)) throw new SlideError("NOT_FOUND", "Slide not found");
@@ -43,16 +82,10 @@ export class SlideService {
     return updated;
   }
   async undo(userId: string, generationId: string) {
-    const generation = await this.requireComplete(generationId, userId);
+    const generation = await this.access.require(generationId, userId, "mutate");
     const restored = await this.repository.undo(generation);
     if (!restored) throw new SlideError("CONFLICT", "Nothing to undo or presentation changed concurrently");
     return restored;
-  }
-  private async requireComplete(id: string, userId: string): Promise<StoredPresentation> {
-    const result = await this.repository.findOwned(id, userId);
-    if (!result) throw new SlideError("NOT_FOUND", "Presentation not found");
-    if (result.status !== "COMPLETED" || !result.htmlContent) throw new SlideError("CONFLICT", "Presentation is not complete");
-    return result;
   }
   private async callAI(request: Parameters<AIGenerator["generate"]>[0], signal?: AbortSignal): Promise<AIResponse> {
     try { return await this.ai.generate(request, { signal }); }

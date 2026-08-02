@@ -77,3 +77,21 @@ export const editResponseSchema = z
   .strict();
 
 export const generationIdSchema = z.uuid();
+
+export const presentationCursorSchema = z
+  .object({
+    createdAt: z.iso.datetime({ offset: true }),
+    id: z.uuid(),
+  })
+  .strict();
+
+export type PresentationCursor = z.infer<typeof presentationCursorSchema>;
+
+export const presentationListQuerySchema = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(50).default(20),
+    cursor: z.string().trim().min(1).optional(),
+  })
+  .strict();
+
+export type PresentationListQuery = z.infer<typeof presentationListQuerySchema>;
