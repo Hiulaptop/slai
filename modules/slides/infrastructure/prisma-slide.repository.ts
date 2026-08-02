@@ -6,6 +6,17 @@ const select = {
   id: true, userId: true, status: true, approvedOutline: true, htmlContent: true,
   currentRevisionNumber: true, nextRevisionNumber: true, provider: true, modelId: true,
   finishReason: true, promptTokens: true, completionTokens: true, totalTokens: true,
+  title: true, createdAt: true, updatedAt: true, completedAt: true,
+} as const;
+
+const summarySelect = {
+  id: true,
+  title: true,
+  status: true,
+  currentRevisionNumber: true,
+  createdAt: true,
+  updatedAt: true,
+  completedAt: true,
 } as const;
 
 export class PrismaSlideRepository implements SlideRepository {
@@ -22,6 +33,37 @@ export class PrismaSlideRepository implements SlideRepository {
     });
   }
   findOwned(id: string, userId: string) { return db.slideGeneration.findFirst({ where: { id, userId }, select }); }
+  listOwned(input: Parameters<SlideRepository["listOwned"]>[0]) {
+    return db.slideGeneration.findMany({
+      where: {
+        userId: input.userId,
+        ...(input.cursor
+          ? {
+              OR: [
+                { createdAt: { lt: new Date(input.cursor.createdAt) } },
+                {
+                  createdAt: new Date(input.cursor.createdAt),
+                  id: { lt: input.cursor.id },
+                },
+              ],
+            }
+          : {}),
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: input.limit + 1,
+      select: summarySelect,
+    });
+  }
+  async deleteOwned(input: Parameters<SlideRepository["deleteOwned"]>[0]) {
+    const deleted = await db.slideGeneration.deleteMany({
+      where: {
+        id: input.id,
+        userId: input.userId,
+        status: { not: "PROCESSING" },
+      },
+    });
+    return deleted.count === 1;
+  }
   appendEdit(input: Parameters<SlideRepository["appendEdit"]>[0]) {
     return db.$transaction(async (tx) => {
       const updated = await tx.slideGeneration.updateMany({ where: { id: input.generation.id, userId: input.generation.userId, status: "COMPLETED", currentRevisionNumber: input.generation.currentRevisionNumber, nextRevisionNumber: input.generation.nextRevisionNumber }, data: { htmlContent: input.html, currentRevisionNumber: input.generation.nextRevisionNumber, nextRevisionNumber: { increment: 1 } } });
