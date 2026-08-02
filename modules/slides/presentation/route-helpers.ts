@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 
 import { AuthError } from "../../auth/domain/auth.errors";
-import type { StoredPresentation } from "../application/slide.ports";
+import type { PresentationPage, PresentationSummary, StoredPresentation } from "../application/slide.ports";
 import { SlideError } from "../domain/slide.errors";
 
 export async function readJson(request: Request): Promise<unknown> {
@@ -35,10 +35,14 @@ export function requireText(form: FormData, name: string): string {
 export function presentationResponse(generation: StoredPresentation) {
   return {
     id: generation.id,
+    title: generation.title,
     status: generation.status,
     outline: generation.approvedOutline,
     html: generation.htmlContent,
     revisionNumber: generation.currentRevisionNumber,
+    createdAt: generation.createdAt,
+    updatedAt: generation.updatedAt,
+    completedAt: generation.completedAt,
     provider: generation.provider,
     modelId: generation.modelId,
     finishReason: generation.finishReason,
@@ -47,6 +51,25 @@ export function presentationResponse(generation: StoredPresentation) {
       completionTokens: generation.completionTokens,
       totalTokens: generation.totalTokens,
     },
+  };
+}
+
+export function presentationListResponse(page: PresentationPage) {
+  return {
+    items: page.items.map(presentationSummaryResponse),
+    nextCursor: page.nextCursor,
+  };
+}
+
+function presentationSummaryResponse(presentation: PresentationSummary) {
+  return {
+    id: presentation.id,
+    title: presentation.title,
+    status: presentation.status,
+    currentRevisionNumber: presentation.currentRevisionNumber,
+    createdAt: presentation.createdAt,
+    updatedAt: presentation.updatedAt,
+    completedAt: presentation.completedAt,
   };
 }
 

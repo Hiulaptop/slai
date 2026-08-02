@@ -1,6 +1,7 @@
 import type { AIRequest } from "../../ai/domain/request.schema";
 import type { AdapterRequestOptions, AIResponse } from "../../ai/infrastructure/cliproxy/adapter.types";
 import type { BatchEdit, SlideOutline } from "../domain/slide.schemas";
+import type { PresentationCursor } from "../domain/slide.schemas";
 
 export interface AIGenerator {
   generate(request: AIRequest, options?: AdapterRequestOptions): Promise<AIResponse>;
@@ -20,6 +21,27 @@ export interface StoredPresentation {
   promptTokens: number | null;
   completionTokens: number | null;
   totalTokens: number | null;
+  title: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+  completedAt: Date | null;
+}
+
+export type PresentationAccessRecord = StoredPresentation;
+
+export interface PresentationSummary {
+  id: string;
+  title: string | null;
+  status: StoredPresentation["status"];
+  currentRevisionNumber: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+  completedAt: Date | null;
+}
+
+export interface PresentationPage {
+  items: PresentationSummary[];
+  nextCursor: string | null;
 }
 
 export interface SlideRepository {
@@ -27,6 +49,8 @@ export interface SlideRepository {
   failGeneration(id: string, code: string, message: string): Promise<void>;
   completeGeneration(id: string, html: string, response: AIResponse): Promise<StoredPresentation>;
   findOwned(id: string, userId: string): Promise<StoredPresentation | null>;
+  listOwned(input: { userId: string; limit: number; cursor?: PresentationCursor }): Promise<PresentationSummary[]>;
+  deleteOwned(input: { id: string; userId: string }): Promise<boolean>;
   appendEdit(input: { generation: StoredPresentation; html: string; edits: BatchEdit["edits"] }): Promise<StoredPresentation | null>;
   undo(generation: StoredPresentation): Promise<StoredPresentation | null>;
 }

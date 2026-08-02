@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthError } from "@/modules/auth/domain/auth.errors";
 import { SlideError } from "@/modules/slides/domain/slide.errors";
 
-const mocks = vi.hoisted(() => ({ authenticate: vi.fn(), suggestOutline: vi.fn(), generate: vi.fn(), edit: vi.fn(), undo: vi.fn() }));
+const mocks = vi.hoisted(() => ({ authenticate: vi.fn(), suggestOutline: vi.fn(), generate: vi.fn(), edit: vi.fn(), undo: vi.fn(), list: vi.fn(), detail: vi.fn(), delete: vi.fn() }));
 vi.mock("server-only", () => ({}));
 vi.mock("@/modules/auth/infrastructure/auth", () => ({ authService: { authenticate: mocks.authenticate } }));
 vi.mock("@/modules/slides/infrastructure/slides", () => ({ slideService: mocks }));
@@ -10,13 +10,15 @@ import { PATCH as edit } from "./edit/route";
 import { POST as generate } from "./generate/route";
 import { POST as outline } from "./outline/route";
 import { POST as undo } from "./[generationId]/undo/route";
+import { DELETE as deletePresentation, GET as detail } from "./[generationId]/route";
+import { GET as list } from "./route";
 
 const id = "123e4567-e89b-12d3-a456-426614174000";
 const user = { id: "user-1", email: "u@test.com", status: "ACTIVE", lastLoginAt: null, createdAt: new Date(), updatedAt: new Date() };
-const presentation = { id, status: "COMPLETED", approvedOutline: { title: "Deck", slides: [{ number: 1, title: "One", summary: "S" }] }, htmlContent: "<html></html>", currentRevisionNumber: 1, provider: "openai", modelId: "model", finishReason: null, promptTokens: 1, completionTokens: 2, totalTokens: 3 };
+const presentation = { id, userId: "user-1", status: "COMPLETED", approvedOutline: { title: "Deck", slides: [{ number: 1, title: "One", summary: "S" }] }, htmlContent: "<html></html>", currentRevisionNumber: 1, nextRevisionNumber: 2, provider: "openai", modelId: "model", finishReason: null, promptTokens: 1, completionTokens: 2, totalTokens: 3, title: "Deck", createdAt: new Date("2026-08-02T00:00:00Z"), updatedAt: new Date("2026-08-02T00:01:00Z"), completedAt: new Date("2026-08-02T00:01:00Z") };
 
 describe("slide routes", () => {
-  beforeEach(() => { vi.clearAllMocks(); mocks.authenticate.mockResolvedValue(user); mocks.suggestOutline.mockResolvedValue(presentation.approvedOutline); mocks.generate.mockResolvedValue(presentation); mocks.edit.mockResolvedValue(presentation); mocks.undo.mockResolvedValue(presentation); });
+  beforeEach(() => { vi.clearAllMocks(); mocks.authenticate.mockResolvedValue(user); mocks.suggestOutline.mockResolvedValue(presentation.approvedOutline); mocks.generate.mockResolvedValue(presentation); mocks.edit.mockResolvedValue(presentation); mocks.undo.mockResolvedValue(presentation); mocks.list.mockResolvedValue({ items: [presentation], nextCursor: null }); mocks.detail.mockResolvedValue(presentation); mocks.delete.mockResolvedValue(undefined); });
   it("authenticates before parsing outline uploads", async () => {
     mocks.authenticate.mockRejectedValueOnce(new AuthError("UNAUTHORIZED", "Unauthorized"));
     const response = await outline(new Request("http://localhost/api/slides/outline", { method: "POST", body: "bad" }));
@@ -42,5 +44,58 @@ describe("slide routes", () => {
     expect((await edit(request)).status).toBe(404);
     mocks.undo.mockRejectedValueOnce(new SlideError("PROVIDER_ERROR", "AI provider request failed"));
     expect((await undo(new Request(`http://localhost/api/slides/${id}/undo`, { method: "POST" }), { params: Promise.resolve({ generationId: id }) })).status).toBe(502);
+  });
+
+  it("authenticates before validating list queries", async () => {
+    mocks.authenticate.mockRejectedValueOnce(new AuthError("UNAUTHORIZED", "Unauthorized"));
+    const response = await list(new Request("http://localhost/api/slides?limit=999"));
+    expect(response.status).toBe(401);
+    expect(mocks.list).not.toHaveBeenCalled();
+  });
+
+  it("lists safe presentation summaries with pagination", async () => {
+    const response = await list(new Request("http://localhost/api/slides?limit=10"));
+    const body = await response.json();
+    expect(response.status).toBe(200);
+    expect(mocks.list).toHaveBeenCalledWith("user-1", { limit: 10 });
+    expect(body.items[0]).toEqual({
+      id,
+      title: "Deck",
+      status: "COMPLETED",
+      currentRevisionNumber: 1,
+      createdAt: "2026-08-02T00:00:00.000Z",
+      updatedAt: "2026-08-02T00:01:00.000Z",
+      completedAt: "2026-08-02T00:01:00.000Z",
+    });
+    expect(JSON.stringify(body)).not.toMatch(/htmlContent|approvedOutline|userId|provider|modelId/);
+  });
+
+  it("rejects invalid pagination", async () => {
+    const response = await list(new Request("http://localhost/api/slides?limit=51"));
+    expect(response.status).toBe(400);
+    expect(mocks.list).not.toHaveBeenCalled();
+  });
+
+  it("returns an owned detail without persistence-only fields", async () => {
+    const response = await detail(new Request(`http://localhost/api/slides/${id}`), { params: Promise.resolve({ generationId: id }) });
+    const body = await response.json();
+    expect(response.status).toBe(200);
+    expect(mocks.detail).toHaveBeenCalledWith("user-1", id);
+    expect(body).toMatchObject({ id, title: "Deck", html: "<html></html>" });
+    expect(JSON.stringify(body)).not.toMatch(/userId|nextRevisionNumber|requestPayload/);
+  });
+
+  it("deletes an owned presentation with no response body", async () => {
+    const response = await deletePresentation(new Request(`http://localhost/api/slides/${id}`, { method: "DELETE" }), { params: Promise.resolve({ generationId: id }) });
+    expect(response.status).toBe(204);
+    expect(await response.text()).toBe("");
+    expect(mocks.delete).toHaveBeenCalledWith("user-1", id);
+  });
+
+  it("maps concealed ownership and delete conflicts", async () => {
+    mocks.detail.mockRejectedValueOnce(new SlideError("NOT_FOUND", "Presentation not found"));
+    expect((await detail(new Request(`http://localhost/api/slides/${id}`), { params: Promise.resolve({ generationId: id }) })).status).toBe(404);
+    mocks.delete.mockRejectedValueOnce(new SlideError("CONFLICT", "Presentation is processing"));
+    expect((await deletePresentation(new Request(`http://localhost/api/slides/${id}`, { method: "DELETE" }), { params: Promise.resolve({ generationId: id }) })).status).toBe(409);
   });
 });
