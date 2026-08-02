@@ -18,21 +18,29 @@ const user = { id: "user-1", email: "u@test.com", status: "ACTIVE", lastLoginAt:
 const presentation = { id, userId: "user-1", status: "COMPLETED", approvedOutline: { title: "Deck", slides: [{ number: 1, title: "One", summary: "S" }] }, htmlContent: "<html></html>", currentRevisionNumber: 1, nextRevisionNumber: 2, provider: "openai", modelId: "model", finishReason: null, promptTokens: 1, completionTokens: 2, totalTokens: 3, title: "Deck", createdAt: new Date("2026-08-02T00:00:00Z"), updatedAt: new Date("2026-08-02T00:01:00Z"), completedAt: new Date("2026-08-02T00:01:00Z") };
 
 describe("slide routes", () => {
-  beforeEach(() => { vi.clearAllMocks(); mocks.authenticate.mockResolvedValue(user); mocks.suggestOutline.mockResolvedValue(presentation.approvedOutline); mocks.generate.mockResolvedValue(presentation); mocks.edit.mockResolvedValue(presentation); mocks.undo.mockResolvedValue(presentation); mocks.list.mockResolvedValue({ items: [presentation], nextCursor: null }); mocks.detail.mockResolvedValue(presentation); mocks.delete.mockResolvedValue(undefined); });
+  beforeEach(() => { vi.clearAllMocks(); mocks.authenticate.mockResolvedValue(user); mocks.suggestOutline.mockResolvedValue(presentation.approvedOutline); mocks.generate.mockResolvedValue(presentation); mocks.edit.mockResolvedValue(presentation); mocks.undo.mockResolvedValue({ generation: presentation, undoableSlideNumbers: [1] }); mocks.list.mockResolvedValue({ items: [presentation], nextCursor: null }); mocks.detail.mockResolvedValue({ generation: presentation, undoableSlideNumbers: [1] }); mocks.delete.mockResolvedValue(undefined); });
   it("authenticates before parsing outline uploads", async () => {
     mocks.authenticate.mockRejectedValueOnce(new AuthError("UNAUTHORIZED", "Unauthorized"));
     const response = await outline(new Request("http://localhost/api/slides/outline", { method: "POST", body: "bad" }));
     expect(response.status).toBe(401); expect(mocks.suggestOutline).not.toHaveBeenCalled();
   });
-  it("passes report and cancellation signal to outline service", async () => {
-    const form = new FormData(); form.set("report", new File(["x"], "report.txt", { type: "text/plain" }));
+  it("returns actionable outline validation errors", async () => {
+    const form = creationForm();
+    form.delete("dataFiles");
+    const response = await outline(new Request("http://localhost/api/slides/outline", { method: "POST", body: form }));
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ error: { message: "Missing dataFiles files" } });
+  });
+  it("passes metadata, repeated files, and cancellation signal to outline service", async () => {
+    const form = creationForm(); form.append("dataFiles", new File(["y"], "other.txt", { type: "text/plain" }));
     const request = new Request("http://localhost/api/slides/outline", { method: "POST", body: form });
-    expect((await outline(request)).status).toBe(200); expect(mocks.suggestOutline).toHaveBeenCalledWith(expect.any(File), request.signal);
+    expect((await outline(request)).status).toBe(200); expect(mocks.suggestOutline).toHaveBeenCalledWith(expect.objectContaining({ title: "Deck", slideCount: 1, dataFiles: expect.arrayContaining([expect.any(File), expect.any(File)]) }), request.signal);
+    expect(mocks.suggestOutline.mock.calls[0][0]).not.toHaveProperty("templateFiles");
   });
   it("creates a presentation from multipart input", async () => {
-    const form = new FormData(); form.set("report", new File(["x"], "r.txt", { type: "text/plain" })); form.set("template", new File(["x"], "t.html", { type: "text/html" })); form.set("outline", JSON.stringify(presentation.approvedOutline));
+    const form = creationForm(); form.set("outline", JSON.stringify(presentation.approvedOutline));
     const response = await generate(new Request("http://localhost/api/slides/generate", { method: "POST", body: form }));
-    expect(response.status).toBe(201); expect(mocks.generate).toHaveBeenCalledWith("user-1", expect.any(File), expect.any(File), presentation.approvedOutline, expect.any(AbortSignal));
+    expect(response.status).toBe(201); expect(mocks.generate).toHaveBeenCalledWith("user-1", expect.objectContaining({ title: "Deck", outline: presentation.approvedOutline, dataFiles: [expect.any(File)], templateFiles: [expect.any(File)] }), expect.any(AbortSignal));
   });
   it("validates and sends one batch edit route", async () => {
     const request = new Request("http://localhost/api/slides/edit", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ generationId: id, edits: [{ slideNumber: 1, prompt: "Improve" }] }) });
@@ -43,7 +51,12 @@ describe("slide routes", () => {
     const request = new Request("http://localhost/api/slides/edit", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ generationId: id, edits: [{ slideNumber: 1, prompt: "Improve" }] }) });
     expect((await edit(request)).status).toBe(404);
     mocks.undo.mockRejectedValueOnce(new SlideError("PROVIDER_ERROR", "AI provider request failed"));
-    expect((await undo(new Request(`http://localhost/api/slides/${id}/undo`, { method: "POST" }), { params: Promise.resolve({ generationId: id }) })).status).toBe(502);
+    expect((await undo(new Request(`http://localhost/api/slides/${id}/undo`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ slideNumber: 1 }) }), { params: Promise.resolve({ generationId: id }) })).status).toBe(502);
+  });
+  it("rejects malformed per-slide undo input", async () => {
+    const response = await undo(new Request(`http://localhost/api/slides/${id}/undo`, { method: "POST", headers: { "content-type": "application/json" }, body: "bad" }), { params: Promise.resolve({ generationId: id }) });
+    expect(response.status).toBe(400);
+    expect(mocks.undo).not.toHaveBeenCalled();
   });
 
   it("authenticates before validating list queries", async () => {
@@ -82,6 +95,7 @@ describe("slide routes", () => {
     expect(response.status).toBe(200);
     expect(mocks.detail).toHaveBeenCalledWith("user-1", id);
     expect(body).toMatchObject({ id, title: "Deck", html: "<html></html>" });
+    expect(body.undoableSlideNumbers).toEqual([1]);
     expect(JSON.stringify(body)).not.toMatch(/userId|nextRevisionNumber|requestPayload/);
   });
 
@@ -99,3 +113,11 @@ describe("slide routes", () => {
     expect((await deletePresentation(new Request(`http://localhost/api/slides/${id}`, { method: "DELETE" }), { params: Promise.resolve({ generationId: id }) })).status).toBe(409);
   });
 });
+
+function creationForm() {
+  const form = new FormData();
+  form.set("title", "Deck"); form.set("prompt", "Explain results"); form.set("slideCount", "1");
+  form.append("dataFiles", new File(["x"], "report.txt", { type: "text/plain" }));
+  form.append("templateFiles", new File(["x"], "template.html", { type: "text/html" }));
+  return form;
+}

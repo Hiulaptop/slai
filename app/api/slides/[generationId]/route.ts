@@ -15,12 +15,7 @@ export async function GET(request: Request, context: RouteContext) {
     const user = await authenticateRequest(request);
     const { generationId } = await context.params;
     return NextResponse.json(
-      presentationResponse(
-        await slideService.detail(
-          user.id,
-          generationIdSchema.parse(generationId),
-        ),
-      ),
+      presentationResponse(await slideService.detail(user.id, generationIdSchema.parse(generationId))),
     );
   } catch (error) {
     return slideErrorResponse(error);

@@ -6,6 +6,8 @@ import { SlideError } from "./slide.errors";
 const MAX_HTML_BYTES = 5 * 1024 * 1024;
 const SLIDE_SELECTOR = "div.slai-slide[data-slide-number]";
 const ACTIVE_CONTENT = /<\s*(script|iframe|object|embed|form)\b|\son[a-z]+\s*=|javascript\s*:|expression\s*\(/i;
+const LAYOUT_STYLE_ID = "slai-layout-constraints";
+const LAYOUT_CSS = `html,body{width:screen;height:screen;margin:0;overflow:hidden}.slai-slide{box-sizing:border-box!important;width:100%!important;height:100%!important;max-width:100%!important;max-height:100%!important;overflow:hidden!important;overscroll-behavior:none!important;position:relative}`;
 const allowedTags = sanitizeHtml.defaults.allowedTags.concat([
   "html", "head", "body", "style", "section", "article", "main", "header", "footer",
   "figure", "figcaption", "svg", "path", "circle", "rect", "line", "polyline", "polygon",
@@ -34,7 +36,7 @@ function assertSize(html: string): void {
 }
 
 export function validatePresentationHtml(html: string, slideCount: number): string {
-  if (/^\s*```/.test(html) || ACTIVE_CONTENT.test(html) || !/<html[\s>]/i.test(html) || !/<head[\s>]/i.test(html) || !/<body[\s>]/i.test(html)) {
+  if (/^\s*```/.test(html) || ACTIVE_CONTENT.test(html) || !/<html[\s>]/i.test(html) || !/<head[\s>]/i.test(html) || !/<body[\s>]/i.test(html) || !/<style[\s>][\s\S]*?\S[\s\S]*?<\/style>/i.test(html)) {
     throw new SlideError("INVALID_MODEL_OUTPUT", "AI returned invalid presentation HTML");
   }
   const sanitized = clean(html);
@@ -45,6 +47,8 @@ export function validatePresentationHtml(html: string, slideCount: number): stri
   slides.forEach((slide, index) => {
     if ($(slide).parents(SLIDE_SELECTOR).length || $(slide).attr("data-slide-number") !== String(index + 1)) throwInvalidHtml();
   });
+  $(`#${LAYOUT_STYLE_ID}`).remove();
+  $("head").append(`<style id="${LAYOUT_STYLE_ID}">${LAYOUT_CSS}</style>`);
   return $.html();
 }
 
@@ -66,6 +70,11 @@ export function extractSlides(html: string, numbers: number[]): Record<number, s
     result[number] = $.html(node);
   });
   return result;
+}
+
+export function slideNumbers(html: string): number[] {
+  const $ = cheerio.load(html);
+  return $(SLIDE_SELECTOR).toArray().map((node) => Number($(node).attr("data-slide-number")));
 }
 
 export function replaceSlides(html: string, replacements: Map<number, string>): string {

@@ -22,6 +22,7 @@ enum SlideGenerationStatus {
 enum SlideRevisionOperation {
   GENERATE
   EDIT
+  UNDO
 }
 
 enum LogLevel {
@@ -111,6 +112,7 @@ model SlideRevision {
   parentRevisionNumber Int?
   operation            SlideRevisionOperation
   editRequest          Json?
+  changedSlideNumbers  Json?
   htmlContent          String                 @db.LongText
   createdAt            DateTime               @default(now())
 

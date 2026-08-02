@@ -2,7 +2,7 @@ import { z } from "zod";
 
 export const outlineSlideSchema = z
   .object({
-    number: z.number().int().min(1).max(50),
+    number: z.number().int().min(1),
     title: z.string().trim().min(1).max(200),
     summary: z.string().trim().min(1).max(2_000),
   })
@@ -11,7 +11,7 @@ export const outlineSlideSchema = z
 export const outlineSchema = z
   .object({
     title: z.string().trim().min(1).max(500),
-    slides: z.array(outlineSlideSchema).min(1).max(50),
+    slides: z.array(outlineSlideSchema).min(1),
   })
   .strict()
   .superRefine((outline, context) => {
@@ -28,6 +28,23 @@ export const outlineSchema = z
 
 export type SlideOutline = z.infer<typeof outlineSchema>;
 
+export const creationMetadataSchema = z
+  .object({
+    title: z.string().trim().min(1).max(500),
+    prompt: z.string().trim().min(1).max(4_000),
+    slideCount: z.coerce.number().int().positive(),
+  })
+  .strict();
+
+export type CreationMetadata = z.infer<typeof creationMetadataSchema>;
+
+export function approvedOutlineSchema(slideCount: number) {
+  return outlineSchema.refine((outline) => outline.slides.length === slideCount, {
+    message: "Outline must match requested slide count",
+    path: ["slides"],
+  });
+}
+
 export const batchEditSchema = z
   .object({
     generationId: z.uuid(),
@@ -35,13 +52,12 @@ export const batchEditSchema = z
       .array(
         z
           .object({
-            slideNumber: z.number().int().min(1).max(50),
+            slideNumber: z.number().int().min(1),
             prompt: z.string().trim().min(1).max(2_000),
           })
           .strict(),
       )
-      .min(1)
-      .max(50),
+      .min(1),
   })
   .strict()
   .superRefine((input, context) => {
@@ -66,17 +82,18 @@ export const editResponseSchema = z
       .array(
         z
           .object({
-            slideNumber: z.number().int().min(1).max(50),
+            slideNumber: z.number().int().min(1),
             html: z.string().min(1),
           })
           .strict(),
       )
-      .min(1)
-      .max(50),
+      .min(1),
   })
   .strict();
 
 export const generationIdSchema = z.uuid();
+
+export const slideUndoSchema = z.object({ slideNumber: z.number().int().positive() }).strict();
 
 export const presentationCursorSchema = z
   .object({

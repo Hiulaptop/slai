@@ -1,6 +1,6 @@
 import type { AIRequest } from "../../ai/domain/request.schema";
 import type { AdapterRequestOptions, AIResponse } from "../../ai/infrastructure/cliproxy/adapter.types";
-import type { BatchEdit, SlideOutline } from "../domain/slide.schemas";
+import type { BatchEdit, CreationMetadata, SlideOutline } from "../domain/slide.schemas";
 import type { PresentationCursor } from "../domain/slide.schemas";
 
 export interface AIGenerator {
@@ -44,6 +44,14 @@ export interface PresentationPage {
   nextCursor: string | null;
 }
 
+export interface SlideCreationInput extends CreationMetadata {
+  dataFiles: File[];
+  templateFiles: File[];
+  outline?: SlideOutline;
+}
+
+export type SlideOutlineInput = Omit<SlideCreationInput, "outline" | "templateFiles">;
+
 export interface SlideRepository {
   createGeneration(input: { userId: string; title: string; provider: string; modelId: string; requestPayload: unknown; approvedOutline: SlideOutline }): Promise<StoredPresentation>;
   failGeneration(id: string, code: string, message: string): Promise<void>;
@@ -52,5 +60,6 @@ export interface SlideRepository {
   listOwned(input: { userId: string; limit: number; cursor?: PresentationCursor }): Promise<PresentationSummary[]>;
   deleteOwned(input: { id: string; userId: string }): Promise<boolean>;
   appendEdit(input: { generation: StoredPresentation; html: string; edits: BatchEdit["edits"] }): Promise<StoredPresentation | null>;
-  undo(generation: StoredPresentation): Promise<StoredPresentation | null>;
+  undo(generation: StoredPresentation, slideNumber: number): Promise<StoredPresentation | null>;
+  undoableSlideNumbers(generation: StoredPresentation): Promise<number[]>;
 }
