@@ -431,7 +431,10 @@ Multipart fields:
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `report` | File | Yes | Source report used to propose slide content |
+| `title` | String | Yes | Presentation title, up to 500 characters |
+| `prompt` | String | Yes | User direction, up to 4,000 characters |
+| `slideCount` | Integer string | Yes | Positive requested slide count |
+| `dataFiles` | File (repeatable) | Yes | One or more factual source files |
 
 Supported report types:
 
@@ -441,7 +444,7 @@ Supported report types:
 - DOCX (`application/vnd.openxmlformats-officedocument.wordprocessingml.document`)
 - OpenDocument text (`application/vnd.oasis.opendocument.text`)
 
-The file must be non-empty and at most 10 MiB.
+Each data file must be non-empty and at most 10 MiB. The combined upload must not exceed 100 MiB. Template files selected in the creation workspace are retained for generation but are not sent to the outline model.
 
 Success: `200 OK`
 
@@ -460,11 +463,14 @@ Success: `200 OK`
 }
 ```
 
-An outline contains 1 through 50 slides. Numbers must be contiguous and one-based, titles are limited to 200 characters, and summaries are limited to 2,000 characters.
+An outline contains exactly `slideCount` slides. Numbers must be contiguous and one-based, titles are limited to 200 characters, and summaries are limited to 2,000 characters. There is no arbitrary slide-count ceiling, although provider context, request, timeout, and output-size limits still apply.
 
 ```bash
 curl -H "Authorization: Bearer $ACCESS_TOKEN" \
-  -F "report=@./report.pdf;type=application/pdf" \
+  -F "title=Quarterly Business Review" \
+  -F "prompt=Summarize performance, risks, and decisions" \
+  -F "slideCount=12" \
+  -F "dataFiles=@./report.pdf;type=application/pdf" \
   http://localhost:3000/api/slides/outline
 ```
 
@@ -480,8 +486,11 @@ Multipart fields:
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `report` | File | Yes | Factual source for presentation content |
-| `template` | File | Yes | Visual reference for layout and styling |
+| `title` | String | Yes | Presentation title |
+| `prompt` | String | Yes | User direction |
+| `slideCount` | Integer string | Yes | Positive count matching the outline length |
+| `dataFiles` | File (repeatable) | Yes | One or more factual source files |
+| `templateFiles` | File (repeatable) | Yes | One or more visual references |
 | `outline` | JSON string | Yes | User-approved outline |
 
 Supported template types:
@@ -492,7 +501,13 @@ Supported template types:
 - `image/jpeg`
 - `image/webp`
 
-Each file must be non-empty and at most 10 MiB. Generation is synchronous and may take as long as the configured model request.
+Each file must be non-empty and at most 10 MiB, and all files together must not exceed 100 MiB. Generation is synchronous and may take as long as the configured model request.
+
+During generation, data files are the only authoritative factual source. Template files influence visual design only. A template PDF is interpreted page by page as an ordered collection of rendered visual references; text, names, dates, and numbers visible in templates must not be copied as presentation facts. Missing data is omitted or identified as unavailable rather than invented.
+
+Generated slides are self-contained HTML/CSS only. JavaScript and other executable content are rejected, and at least one non-empty head `<style>` element is required. External stylesheets, CSS imports, CDN utility classes without local definitions, and script-generated styles are not supported. Each slide is constrained to the full fixed viewport with `width: 100%`, `height: 100%`, `box-sizing: border-box`, and `overflow: hidden`; slide viewers do not expose scrollbars. Phase 3 preserves body attributes and non-slide ancestor containers so selectors and CSS variables based on the generated document hierarchy continue to render correctly.
+
+The editor's Download HTML action exports every slide in one standalone file. The application adds its own fixed, trusted navigation code to that download so it opens on slide 1 and supports Previous, Next, ArrowLeft, and ArrowRight without requiring the SLAI runtime. LLM-generated JavaScript remains prohibited; the export navigation is maintained by the application.
 
 Example outline field:
 
@@ -528,6 +543,7 @@ Success: `201 Created`
   },
   "html": "<!doctype html><html>...</html>",
   "revisionNumber": 1,
+  "undoableSlideNumbers": [],
   "createdAt": "2026-08-02T00:00:00.000Z",
   "updatedAt": "2026-08-02T00:01:00.000Z",
   "completedAt": "2026-08-02T00:01:00.000Z",
@@ -546,8 +562,11 @@ Success: `201 Created`
 OUTLINE='{"title":"Quarterly Business Review","slides":[{"number":1,"title":"Executive Summary","summary":"Summarize performance, risks, and next steps."}]}'
 
 curl -H "Authorization: Bearer $ACCESS_TOKEN" \
-  -F "report=@./report.pdf;type=application/pdf" \
-  -F "template=@./template.html;type=text/html" \
+  -F "title=Quarterly Business Review" \
+  -F "prompt=Summarize performance, risks, and decisions" \
+  -F "slideCount=1" \
+  -F "dataFiles=@./report.pdf;type=application/pdf" \
+  -F "templateFiles=@./template.pdf;type=application/pdf" \
   -F "outline=$OUTLINE" \
   http://localhost:3000/api/slides/generate
 ```
@@ -594,7 +613,7 @@ GET /api/slides/{generationId}
 Authorization: Bearer <access-token>
 ```
 
-`generationId` must be a UUID. Success returns the same safe presentation DTO used by generation, editing, and undo. Pending, processing, and failed presentations can be retrieved with unavailable output fields set to `null`.
+`generationId` must be a UUID. Success returns the same safe presentation DTO used by generation, editing, and undo, including `undoableSlideNumbers`. Pending, processing, and failed presentations can be retrieved with unavailable output fields set to `null`.
 
 ### Batch Edit Slides
 
@@ -624,8 +643,8 @@ Request:
 
 Rules:
 
-- `edits` contains 1 through 50 items.
-- Slide numbers must be unique and from 1 through 50.
+- `edits` contains one or more items and must fit configured request/provider limits.
+- Slide numbers must be unique positive integers that exist in the presentation.
 - Each prompt contains 1 through 2,000 characters after trimming.
 - The presentation must be complete and owned by the caller.
 - The model must return exactly one valid replacement per requested slide.
@@ -642,16 +661,23 @@ curl -X PATCH \
   http://localhost:3000/api/slides/edit
 ```
 
-### Undo the Current Revision
+### Undo One Slide
 
 ```http
 POST /api/slides/{generationId}/undo
+Content-Type: application/json
 Authorization: Bearer <access-token>
 ```
 
-Success: `200 OK` with the restored presentation DTO. If the current revision has no parent, the endpoint returns `409`.
+Request:
 
-Undo does not delete revisions. Editing after undo creates a new revision branch from the restored parent.
+```json
+{ "slideNumber": 2 }
+```
+
+Success: `200 OK` with the updated presentation DTO. Only the selected slide is restored; all other current slides remain unchanged. If that slide has no earlier version, the endpoint returns `409`.
+
+Undo does not delete revisions. It creates a new immutable `UNDO` revision whose parent is the current revision.
 
 ### Delete a Presentation
 
@@ -680,7 +706,10 @@ export ACCESS_TOKEN=$(printf '%s' "$REGISTER_RESPONSE" | jq -r '.accessToken')
 # Ask the model for an outline.
 OUTLINE_RESPONSE=$(curl -s \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
-  -F "report=@./report.pdf;type=application/pdf" \
+  -F "title=Quarterly Business Review" \
+  -F "prompt=Summarize performance, risks, and decisions" \
+  -F "slideCount=1" \
+  -F "dataFiles=@./report.pdf;type=application/pdf" \
   http://localhost:3000/api/slides/outline)
 
 OUTLINE=$(printf '%s' "$OUTLINE_RESPONSE" | jq -c '.outline')
@@ -688,8 +717,11 @@ OUTLINE=$(printf '%s' "$OUTLINE_RESPONSE" | jq -c '.outline')
 # Generate a presentation from the approved outline.
 PRESENTATION=$(curl -s \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
-  -F "report=@./report.pdf;type=application/pdf" \
-  -F "template=@./template.html;type=text/html" \
+  -F "title=Quarterly Business Review" \
+  -F "prompt=Summarize performance, risks, and decisions" \
+  -F "slideCount=1" \
+  -F "dataFiles=@./report.pdf;type=application/pdf" \
+  -F "templateFiles=@./template.html;type=text/html" \
   -F "outline=$OUTLINE" \
   http://localhost:3000/api/slides/generate)
 
@@ -705,6 +737,8 @@ curl -s -X PATCH \
 # Undo the edit.
 curl -s -X POST \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"slideNumber":1}' \
   "http://localhost:3000/api/slides/$PRESENTATION_ID/undo"
 ```
 
