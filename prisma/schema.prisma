@@ -19,6 +19,11 @@ enum SlideGenerationStatus {
   FAILED
 }
 
+enum SlideRevisionOperation {
+  GENERATE
+  EDIT
+}
+
 enum LogLevel {
   DEBUG
   INFO
@@ -64,34 +69,55 @@ model AuthSession {
 }
 
 model SlideGeneration {
-  id               String                @id @default(uuid()) @db.Char(36)
-  userId           String?               @db.Char(36)
-  status           SlideGenerationStatus @default(PENDING)
-  title            String?               @db.VarChar(500)
-  provider         String                @db.VarChar(50)
-  modelId          String                @db.VarChar(255)
-  requestPayload   Json
-  responsePayload  Json?
-  htmlContent      String?               @db.LongText
-  finishReason     String?               @db.VarChar(100)
-  promptTokens     Int?
-  completionTokens Int?
-  totalTokens      Int?
-  errorCode        String?               @db.VarChar(100)
-  errorMessage     String?               @db.Text
-  startedAt        DateTime?
-  completedAt      DateTime?
-  createdAt        DateTime              @default(now())
-  updatedAt        DateTime              @updatedAt
+  id                    String                @id @default(uuid()) @db.Char(36)
+  userId                String?               @db.Char(36)
+  status                SlideGenerationStatus @default(PENDING)
+  title                 String?               @db.VarChar(500)
+  provider              String                @db.VarChar(50)
+  modelId               String                @db.VarChar(255)
+  requestPayload        Json
+  responsePayload       Json?
+  approvedOutline       Json?
+  htmlContent           String?               @db.LongText
+  currentRevisionNumber Int?
+  nextRevisionNumber    Int                   @default(1)
+  finishReason          String?               @db.VarChar(100)
+  promptTokens          Int?
+  completionTokens      Int?
+  totalTokens           Int?
+  errorCode             String?               @db.VarChar(100)
+  errorMessage          String?               @db.Text
+  startedAt             DateTime?
+  completedAt           DateTime?
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
 
   user           User?           @relation(fields: [userId], references: [id], onDelete: SetNull)
   apiRequestLogs ApiRequestLog[]
   systemLogs     SystemLog[]
+  revisions      SlideRevision[]
 
   @@index([userId, createdAt])
   @@index([status, createdAt])
   @@index([provider, modelId])
   @@map("slide_generations")
+}
+
+model SlideRevision {
+  id                   String                 @id @default(uuid()) @db.Char(36)
+  slideGenerationId    String                 @db.Char(36)
+  revisionNumber       Int
+  parentRevisionNumber Int?
+  operation            SlideRevisionOperation
+  editRequest          Json?
+  htmlContent          String                 @db.LongText
+  createdAt            DateTime               @default(now())
+
+  slideGeneration SlideGeneration @relation(fields: [slideGenerationId], references: [id], onDelete: Cascade)
+
+  @@unique([slideGenerationId, revisionNumber])
+  @@index([slideGenerationId, parentRevisionNumber])
+  @@map("slide_revisions")
 }
 
 model ApiRequestLog {

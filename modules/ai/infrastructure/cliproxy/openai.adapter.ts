@@ -46,6 +46,9 @@ export class OpenAICliProxyAdapter extends CliProxyAdapter {
       ...(request.maxOutputTokens === undefined
         ? {}
         : { max_tokens: request.maxOutputTokens }),
+      ...(request.responseFormat === "json_object"
+        ? { response_format: { type: "json_object" as const } }
+        : {}),
       stream,
       ...(stream ? { stream_options: { include_usage: true } } : {}),
     };

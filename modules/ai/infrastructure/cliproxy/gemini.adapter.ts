@@ -99,6 +99,9 @@ export class GeminiCliProxyAdapter extends CliProxyAdapter {
         ...(request.maxOutputTokens === undefined
           ? {}
           : { maxOutputTokens: request.maxOutputTokens }),
+        ...(request.responseFormat === "json_object"
+          ? { responseMimeType: "application/json" as const }
+          : {}),
       },
     };
   }
