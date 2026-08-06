@@ -60,6 +60,7 @@ export interface SlideRepository {
   listOwned(input: { userId: string; limit: number; cursor?: PresentationCursor }): Promise<PresentationSummary[]>;
   deleteOwned(input: { id: string; userId: string }): Promise<boolean>;
   appendEdit(input: { generation: StoredPresentation; html: string; edits: BatchEdit["edits"] }): Promise<StoredPresentation | null>;
+  saveDesign(input: { generation: StoredPresentation; html: string; expectedRevision: number | null }): Promise<StoredPresentation | null>;
   undo(generation: StoredPresentation, slideNumber: number): Promise<StoredPresentation | null>;
   undoableSlideNumbers(generation: StoredPresentation): Promise<number[]>;
 }

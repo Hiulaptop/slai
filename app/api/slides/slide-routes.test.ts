@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthError } from "@/modules/auth/domain/auth.errors";
 import { SlideError } from "@/modules/slides/domain/slide.errors";
 
-const mocks = vi.hoisted(() => ({ authenticate: vi.fn(), suggestOutline: vi.fn(), generate: vi.fn(), edit: vi.fn(), undo: vi.fn(), list: vi.fn(), detail: vi.fn(), delete: vi.fn() }));
+const mocks = vi.hoisted(() => ({ authenticate: vi.fn(), suggestOutline: vi.fn(), generate: vi.fn(), edit: vi.fn(), undo: vi.fn(), list: vi.fn(), detail: vi.fn(), delete: vi.fn(), bootstrapDesign: vi.fn(), saveDesign: vi.fn() }));
 vi.mock("server-only", () => ({}));
 vi.mock("@/modules/auth/infrastructure/auth", () => ({ authService: { authenticate: mocks.authenticate } }));
 vi.mock("@/modules/slides/infrastructure/slides", () => ({ slideService: mocks }));
@@ -12,13 +12,15 @@ import { POST as outline } from "./outline/route";
 import { POST as undo } from "./[generationId]/undo/route";
 import { DELETE as deletePresentation, GET as detail } from "./[generationId]/route";
 import { GET as list } from "./route";
+import { POST as bootstrapDesign } from "./design/bootstrap/route";
+import { PATCH as saveDesign } from "./design/save/route";
 
 const id = "123e4567-e89b-12d3-a456-426614174000";
 const user = { id: "user-1", email: "u@test.com", status: "ACTIVE", lastLoginAt: null, createdAt: new Date(), updatedAt: new Date() };
 const presentation = { id, userId: "user-1", status: "COMPLETED", approvedOutline: { title: "Deck", slides: [{ number: 1, title: "One", summary: "S" }] }, htmlContent: "<html></html>", currentRevisionNumber: 1, nextRevisionNumber: 2, provider: "openai", modelId: "model", finishReason: null, promptTokens: 1, completionTokens: 2, totalTokens: 3, title: "Deck", createdAt: new Date("2026-08-02T00:00:00Z"), updatedAt: new Date("2026-08-02T00:01:00Z"), completedAt: new Date("2026-08-02T00:01:00Z") };
 
 describe("slide routes", () => {
-  beforeEach(() => { vi.clearAllMocks(); mocks.authenticate.mockResolvedValue(user); mocks.suggestOutline.mockResolvedValue(presentation.approvedOutline); mocks.generate.mockResolvedValue(presentation); mocks.edit.mockResolvedValue(presentation); mocks.undo.mockResolvedValue({ generation: presentation, undoableSlideNumbers: [1] }); mocks.list.mockResolvedValue({ items: [presentation], nextCursor: null }); mocks.detail.mockResolvedValue({ generation: presentation, undoableSlideNumbers: [1] }); mocks.delete.mockResolvedValue(undefined); });
+  beforeEach(() => { vi.clearAllMocks(); mocks.authenticate.mockResolvedValue(user); mocks.suggestOutline.mockResolvedValue(presentation.approvedOutline); mocks.generate.mockResolvedValue(presentation); mocks.edit.mockResolvedValue(presentation); mocks.undo.mockResolvedValue({ generation: presentation, undoableSlideNumbers: [1] }); mocks.list.mockResolvedValue({ items: [presentation], nextCursor: null }); mocks.detail.mockResolvedValue({ generation: presentation, undoableSlideNumbers: [1] }); mocks.delete.mockResolvedValue(undefined); mocks.bootstrapDesign.mockResolvedValue(presentation); mocks.saveDesign.mockResolvedValue(presentation); });
   it("authenticates before parsing outline uploads", async () => {
     mocks.authenticate.mockRejectedValueOnce(new AuthError("UNAUTHORIZED", "Unauthorized"));
     const response = await outline(new Request("http://localhost/api/slides/outline", { method: "POST", body: "bad" }));
@@ -111,6 +113,42 @@ describe("slide routes", () => {
     expect((await detail(new Request(`http://localhost/api/slides/${id}`), { params: Promise.resolve({ generationId: id }) })).status).toBe(404);
     mocks.delete.mockRejectedValueOnce(new SlideError("CONFLICT", "Presentation is processing"));
     expect((await deletePresentation(new Request(`http://localhost/api/slides/${id}`, { method: "DELETE" }), { params: Promise.resolve({ generationId: id }) })).status).toBe(409);
+  });
+
+  it("authenticates before bootstrapping a design project", async () => {
+    mocks.authenticate.mockRejectedValueOnce(new AuthError("UNAUTHORIZED", "Unauthorized"));
+    const response = await bootstrapDesign(new Request("http://localhost/api/slides/design/bootstrap", { method: "POST", body: "bad" }));
+    expect(response.status).toBe(401);
+    expect(mocks.bootstrapDesign).not.toHaveBeenCalled();
+  });
+
+  it("bootstraps a blank design project and returns 201", async () => {
+    const request = new Request("http://localhost/api/slides/design/bootstrap", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "Board deck", mode: "blank", slideCount: 3 }) });
+    const response = await bootstrapDesign(request);
+    expect(response.status).toBe(201);
+    expect(mocks.bootstrapDesign).toHaveBeenCalledWith("user-1", { title: "Board deck", mode: "blank", slideCount: 3 });
+    const body = await response.json();
+    expect(body).toMatchObject({ id, title: "Deck" });
+  });
+
+  it("rejects a template bootstrap request missing templateId", async () => {
+    const request = new Request("http://localhost/api/slides/design/bootstrap", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "From template", mode: "template" }) });
+    const response = await bootstrapDesign(request);
+    expect(response.status).toBe(400);
+    expect(mocks.bootstrapDesign).not.toHaveBeenCalled();
+  });
+
+  it("saves a design with its expected revision", async () => {
+    const request = new Request("http://localhost/api/slides/design/save", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ generationId: id, html: "<html><body><div class=\"slai-slide\" data-slide-number=\"1\"></div></body></html>", expectedRevision: 1 }) });
+    const response = await saveDesign(request);
+    expect(response.status).toBe(200);
+    expect(mocks.saveDesign).toHaveBeenCalledWith("user-1", { generationId: id, html: expect.stringContaining("slai-slide"), expectedRevision: 1 });
+  });
+
+  it("maps a stale design-save revision to a 409 conflict", async () => {
+    mocks.saveDesign.mockRejectedValueOnce(new SlideError("CONFLICT", "Presentation changed concurrently"));
+    const request = new Request("http://localhost/api/slides/design/save", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ generationId: id, html: "<html><body><div class=\"slai-slide\" data-slide-number=\"1\"></div></body></html>", expectedRevision: 1 }) });
+    expect((await saveDesign(request)).status).toBe(409);
   });
 });
 

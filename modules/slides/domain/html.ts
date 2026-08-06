@@ -35,6 +35,15 @@ function assertSize(html: string): void {
   }
 }
 
+export function buildBlankPresentationHtml(slideCount: number): string {
+  const slides = Array.from(
+    { length: slideCount },
+    (_, index) => `<div class="slai-slide" data-slide-number="${index + 1}"></div>`,
+  ).join("");
+  const html = `<html><head><style>.slai-slide{background:#ffffff;}</style></head><body>${slides}</body></html>`;
+  return validatePresentationHtml(html, slideCount);
+}
+
 export function validatePresentationHtml(html: string, slideCount: number): string {
   if (/^\s*```/.test(html) || ACTIVE_CONTENT.test(html) || !/<html[\s>]/i.test(html) || !/<head[\s>]/i.test(html) || !/<body[\s>]/i.test(html) || !/<style[\s>][\s\S]*?\S[\s\S]*?<\/style>/i.test(html)) {
     throw new SlideError("INVALID_MODEL_OUTPUT", "AI returned invalid presentation HTML");
