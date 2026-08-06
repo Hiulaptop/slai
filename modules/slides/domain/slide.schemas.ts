@@ -112,3 +112,29 @@ export const presentationListQuerySchema = z
   .strict();
 
 export type PresentationListQuery = z.infer<typeof presentationListQuerySchema>;
+
+export const designBootstrapSchema = z
+  .object({
+    title: z.string().trim().min(1).max(500),
+    mode: z.enum(["blank", "template"]),
+    templateId: z.uuid().optional(),
+    slideCount: z.number().int().min(1).max(50).optional(),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if (input.mode === "template" && !input.templateId) {
+      context.addIssue({ code: "custom", path: ["templateId"], message: "templateId is required when mode is template" });
+    }
+  });
+
+export type DesignBootstrapInput = z.infer<typeof designBootstrapSchema>;
+
+export const designSaveSchema = z
+  .object({
+    generationId: z.uuid(),
+    html: z.string().trim().min(1),
+    expectedRevision: z.number().int().min(1).nullable(),
+  })
+  .strict();
+
+export type DesignSaveInput = z.infer<typeof designSaveSchema>;

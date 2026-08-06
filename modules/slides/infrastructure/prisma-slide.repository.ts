@@ -73,6 +73,37 @@ export class PrismaSlideRepository implements SlideRepository {
       return tx.slideGeneration.findUniqueOrThrow({ where: { id: input.generation.id }, select });
     });
   }
+  saveDesign(input: Parameters<SlideRepository["saveDesign"]>[0]) {
+    return db.$transaction(async (tx) => {
+      const updated = await tx.slideGeneration.updateMany({
+        where: {
+          id: input.generation.id,
+          userId: input.generation.userId,
+          status: "COMPLETED",
+          currentRevisionNumber: input.expectedRevision,
+          nextRevisionNumber: input.generation.nextRevisionNumber,
+        },
+        data: {
+          htmlContent: input.html,
+          currentRevisionNumber: input.generation.nextRevisionNumber,
+          nextRevisionNumber: { increment: 1 },
+        },
+      });
+      if (updated.count !== 1) return null;
+      await tx.slideRevision.create({
+        data: {
+          slideGenerationId: input.generation.id,
+          revisionNumber: input.generation.nextRevisionNumber,
+          parentRevisionNumber: input.expectedRevision,
+          operation: "EDIT",
+          editRequest: undefined,
+          changedSlideNumbers: slideNumbers(input.html),
+          htmlContent: input.html,
+        },
+      });
+      return tx.slideGeneration.findUniqueOrThrow({ where: { id: input.generation.id }, select });
+    });
+  }
   undo(generation: StoredPresentation, slideNumber: number) {
     return db.$transaction(async (tx) => {
       if (generation.currentRevisionNumber === null) return null;

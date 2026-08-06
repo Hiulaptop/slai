@@ -88,6 +88,21 @@ describe("PrismaSlideRepository", () => {
     });
   });
 
+  it("saves a design using the client's expected revision as the CAS condition", async () => {
+    const updated = { ...generation, htmlContent: firstHtml, currentRevisionNumber: 3, nextRevisionNumber: 4 };
+    const tx = { slideGeneration: { updateMany: vi.fn().mockResolvedValue({ count: 1 }), findUniqueOrThrow: vi.fn().mockResolvedValue(updated) }, slideRevision: { create: vi.fn().mockResolvedValue({}) } };
+    mocks.db.$transaction.mockImplementation((operation: (client: typeof tx) => unknown) => operation(tx));
+    await expect(new PrismaSlideRepository().saveDesign({ generation, html: firstHtml, expectedRevision: 2 })).resolves.toEqual(updated);
+    expect(tx.slideGeneration.updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ currentRevisionNumber: 2, nextRevisionNumber: 3 }) }));
+    expect(tx.slideRevision.create).toHaveBeenCalledWith({ data: expect.objectContaining({ revisionNumber: 3, parentRevisionNumber: 2, operation: "EDIT", changedSlideNumbers: [1, 2] }) });
+  });
+  it("rejects a design save when the client's expected revision is stale", async () => {
+    const tx = { slideGeneration: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) }, slideRevision: { create: vi.fn() } };
+    mocks.db.$transaction.mockImplementation((operation: (client: typeof tx) => unknown) => operation(tx));
+    await expect(new PrismaSlideRepository().saveDesign({ generation, html: firstHtml, expectedRevision: 1 })).resolves.toBeNull();
+    expect(tx.slideRevision.create).not.toHaveBeenCalled();
+    expect(tx.slideGeneration.updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ currentRevisionNumber: 1 }) }));
+  });
   it("conditionally deletes only owned non-processing presentations", async () => {
     const deleteMany = vi.fn().mockResolvedValue({ count: 0 });
     (mocks.db as Record<string, unknown>).slideGeneration = { deleteMany };

@@ -85,3 +85,31 @@ export interface ApiErrorBody {
     message?: string;
   };
 }
+
+export type DesignMode = "blank" | "template";
+
+export interface DesignBootstrapRequest {
+  title: string;
+  mode: DesignMode;
+  templateId?: string;
+  slideCount?: number;
+}
+
+export interface DesignBootstrapResponse {
+  id: string;
+}
+
+export interface TemplateSummary {
+  id: string;
+  name: string;
+}
+
+export interface TemplateListResponse {
+  items: TemplateSummary[];
+}
+
+export interface DesignSaveRequest {
+  generationId: string;
+  html: string;
+  expectedRevision: number | null;
+}

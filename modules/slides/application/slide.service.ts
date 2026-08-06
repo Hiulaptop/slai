@@ -1,14 +1,14 @@
 import type { AIResponse } from "../../ai/infrastructure/cliproxy/adapter.types";
-import { extractSlides, replaceSlides, validatePresentationHtml, validateReplacementHtml } from "../domain/html";
+import { buildBlankPresentationHtml, extractSlides, replaceSlides, slideNumbers, validatePresentationHtml, validateReplacementHtml } from "../domain/html";
 import { parseModelJson } from "../domain/model-output";
 import { editSystemPrompt, generationSystemPrompt, OUTLINE_SYSTEM_PROMPT } from "../domain/prompts";
 import { SlideError } from "../domain/slide.errors";
-import { approvedOutlineSchema, editResponseSchema, outlineSchema, type BatchEdit, type SlideOutline } from "../domain/slide.schemas";
+import { approvedOutlineSchema, editResponseSchema, outlineSchema, type BatchEdit, type DesignBootstrapInput, type DesignSaveInput, type SlideOutline } from "../domain/slide.schemas";
 import { assertAggregateUpload, fileMetadataList, toFileParts } from "../domain/uploads";
 import { decodePresentationCursor, encodePresentationCursor } from "../domain/presentation-cursor";
 import type { PresentationListQuery } from "../domain/slide.schemas";
 import { PresentationAccessPolicy } from "./presentation-access.policy";
-import type { AIGenerator, PresentationPage, SlideCreationInput, SlideOutlineInput, SlideRepository } from "./slide.ports";
+import type { AIGenerator, PresentationPage, SlideCreationInput, SlideOutlineInput, SlideRepository, StoredPresentation } from "./slide.ports";
 
 interface AIConfiguration {
   generator: AIGenerator;
@@ -95,6 +95,44 @@ export class SlideService {
       await this.repository.failGeneration(generation.id, error instanceof SlideError ? error.code : "PROVIDER_ERROR", "Slide generation failed");
       throw error;
     }
+  }
+  async bootstrapDesign(userId: string, input: DesignBootstrapInput): Promise<StoredPresentation> {
+    if (input.mode === "template") {
+      throw new SlideError("INVALID_INPUT", "Template-based design projects are not available yet");
+    }
+    const slideCount = input.slideCount ?? 1;
+    const html = buildBlankPresentationHtml(slideCount);
+    const outline: SlideOutline = {
+      title: input.title,
+      slides: Array.from({ length: slideCount }, (_, index) => ({
+        number: index + 1,
+        title: `Slide ${index + 1}`,
+        summary: "Untitled slide",
+      })),
+    };
+    const generation = await this.repository.createGeneration({
+      userId,
+      title: input.title,
+      provider: "design",
+      modelId: "blank",
+      approvedOutline: outline,
+      requestPayload: { kind: "design-bootstrap", mode: input.mode, slideCount },
+    });
+    return this.repository.completeGeneration(generation.id, html, {
+      text: html,
+      model: "blank",
+      finishReason: "design_bootstrap",
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+    });
+  }
+  async saveDesign(userId: string, input: DesignSaveInput): Promise<StoredPresentation> {
+    const generation = await this.access.require(input.generationId, userId, "mutate");
+    const declaredCount = slideNumbers(input.html).length;
+    if (declaredCount < 1) throw new SlideError("INVALID_INPUT", "Design HTML must contain at least one slide");
+    const sanitized = validatePresentationHtml(input.html, declaredCount);
+    const updated = await this.repository.saveDesign({ generation, html: sanitized, expectedRevision: input.expectedRevision });
+    if (!updated) throw new SlideError("CONFLICT", "Presentation changed concurrently");
+    return updated;
   }
   async edit(userId: string, input: BatchEdit, signal?: AbortSignal) {
     const ai = this.resolveAI();

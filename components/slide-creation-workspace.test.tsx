@@ -4,7 +4,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import NewPresentationPage from "./page";
+import { SlideCreationWorkspace } from "./slide-creation-workspace";
 
 const mocks = vi.hoisted(() => ({ authFetch: vi.fn(), push: vi.fn() }));
 
@@ -36,7 +36,7 @@ async function completeInputs(slideCount = "2") {
   return { user, selected };
 }
 
-describe("NewPresentationPage", () => {
+describe("SlideCreationWorkspace", () => {
   beforeEach(() => {
     mocks.authFetch.mockReset();
     mocks.push.mockReset();
@@ -44,7 +44,7 @@ describe("NewPresentationPage", () => {
 
   it("shows field errors and has no arbitrary slide-count maximum", async () => {
     const user = userEvent.setup();
-    render(<NewPresentationPage />);
+    render(<SlideCreationWorkspace />);
     const count = screen.getByLabelText("Number of slides");
 
     expect(count).not.toHaveAttribute("max");
@@ -58,7 +58,7 @@ describe("NewPresentationPage", () => {
   });
 
   it("lists multiple files, removes individual files, and rejects invalid files", async () => {
-    render(<NewPresentationPage />);
+    render(<SlideCreationWorkspace />);
     const { user, selected } = await completeInputs();
 
     expect(within(screen.getByRole("list", { name: "Selected data files" })).getAllByRole("listitem")).toHaveLength(2);
@@ -77,7 +77,7 @@ describe("NewPresentationPage", () => {
     mocks.authFetch
       .mockResolvedValueOnce(Response.json({ error: { message: "Provider is busy" } }, { status: 502 }))
       .mockResolvedValueOnce(Response.json({ outline: outline(51) }));
-    render(<NewPresentationPage />);
+    render(<SlideCreationWorkspace />);
     const { user } = await completeInputs("51");
 
     await user.click(screen.getByRole("button", { name: "Review outline" }));
@@ -101,7 +101,7 @@ describe("NewPresentationPage", () => {
       .mockResolvedValueOnce(Response.json({ outline: outline() }))
       .mockResolvedValueOnce(Response.json({ error: { message: "Generation timed out" } }, { status: 502 }))
       .mockResolvedValueOnce(Response.json({ id: "deck-123" }, { status: 201 }));
-    render(<NewPresentationPage />);
+    render(<SlideCreationWorkspace />);
     const { user } = await completeInputs();
 
     await user.click(screen.getByRole("button", { name: "Review outline" }));

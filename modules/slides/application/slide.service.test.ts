@@ -7,7 +7,7 @@ const html = '<!doctype html><html><head><style>.slai-slide{color:#123456}</styl
 const stored: StoredPresentation = { id: "123e4567-e89b-12d3-a456-426614174000", userId: "user-1", status: "COMPLETED", approvedOutline: outline, htmlContent: html, currentRevisionNumber: 1, nextRevisionNumber: 2, provider: "openai", modelId: "model", finishReason: "stop", promptTokens: 1, completionTokens: 2, totalTokens: 3, title: "Deck", createdAt: new Date("2026-08-02T00:00:00Z"), updatedAt: new Date("2026-08-02T00:01:00Z"), completedAt: new Date("2026-08-02T00:01:00Z") };
 const creation = { title: "Deck", prompt: "Explain results", slideCount: 2, dataFiles: [new File(["x"], "r.txt", { type: "text/plain" })], templateFiles: [new File(["x"], "t.html", { type: "text/html" })] };
 
-function repository(): SlideRepository { return { createGeneration: vi.fn().mockResolvedValue({ ...stored, status: "PROCESSING" }), failGeneration: vi.fn(), completeGeneration: vi.fn().mockResolvedValue(stored), findOwned: vi.fn().mockResolvedValue(stored), listOwned: vi.fn().mockResolvedValue([]), deleteOwned: vi.fn().mockResolvedValue(true), appendEdit: vi.fn().mockImplementation(async ({ html: next }) => ({ ...stored, htmlContent: next, currentRevisionNumber: 2 })), undo: vi.fn().mockResolvedValue({ ...stored, currentRevisionNumber: 2, nextRevisionNumber: 3 }), undoableSlideNumbers: vi.fn().mockResolvedValue([1]) }; }
+function repository(): SlideRepository { return { createGeneration: vi.fn().mockResolvedValue({ ...stored, status: "PROCESSING" }), failGeneration: vi.fn(), completeGeneration: vi.fn().mockResolvedValue(stored), findOwned: vi.fn().mockResolvedValue(stored), listOwned: vi.fn().mockResolvedValue([]), deleteOwned: vi.fn().mockResolvedValue(true), appendEdit: vi.fn().mockImplementation(async ({ html: next }) => ({ ...stored, htmlContent: next, currentRevisionNumber: 2 })), saveDesign: vi.fn().mockImplementation(async ({ html: next }) => ({ ...stored, htmlContent: next, currentRevisionNumber: 2 })), undo: vi.fn().mockResolvedValue({ ...stored, currentRevisionNumber: 2, nextRevisionNumber: 3 }), undoableSlideNumbers: vi.fn().mockResolvedValue([1]) }; }
 function ai(): AIGenerator { return { generate: vi.fn() }; }
 
 describe("SlideService", () => {
@@ -84,5 +84,50 @@ describe("SlideService", () => {
     expect(repo.deleteOwned).toHaveBeenCalledWith({ id: stored.id, userId: "user-1" });
     vi.mocked(repo.deleteOwned).mockResolvedValueOnce(false);
     await expect(service.delete("user-1", stored.id)).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("bootstraps a completed blank design without calling the AI provider", async () => {
+    await service.bootstrapDesign("user-1", { title: "Board deck", mode: "blank", slideCount: 3 });
+    expect(generator.generate).not.toHaveBeenCalled();
+    expect(repo.createGeneration).toHaveBeenCalledWith(expect.objectContaining({
+      userId: "user-1",
+      title: "Board deck",
+      provider: "design",
+      modelId: "blank",
+      approvedOutline: expect.objectContaining({ slides: expect.arrayContaining([expect.objectContaining({ number: 1 })]) }),
+    }));
+    const html = vi.mocked(repo.completeGeneration).mock.calls[0][1];
+    expect(html.match(/data-slide-number="/g)).toHaveLength(3);
+    expect(html).toContain('data-slide-number="3"');
+  });
+
+  it("defaults blank bootstrap to a single slide", async () => {
+    await service.bootstrapDesign("user-1", { title: "Solo slide", mode: "blank" });
+    const html = vi.mocked(repo.completeGeneration).mock.calls[0][1];
+    expect(html.match(/data-slide-number="/g)).toHaveLength(1);
+  });
+
+  it("rejects template bootstrap since no template library exists yet", async () => {
+    await expect(service.bootstrapDesign("user-1", { title: "From template", mode: "template", templateId: "123e4567-e89b-12d3-a456-426614174099" }))
+      .rejects.toMatchObject({ code: "INVALID_INPUT" });
+    expect(repo.createGeneration).not.toHaveBeenCalled();
+  });
+
+  it("saves a sanitized design and enforces the client's expected revision as CAS input", async () => {
+    const designHtml = '<html><head><style>.slai-slide{color:red}</style></head><body><div class="slai-slide" data-slide-number="1">Hi</div></body></html>';
+    await service.saveDesign("user-1", { generationId: stored.id, html: designHtml, expectedRevision: 1 });
+    expect(repo.saveDesign).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: 1, html: expect.stringContaining("slai-slide") }));
+  });
+
+  it("rejects design saves with no slides without persisting", async () => {
+    await expect(service.saveDesign("user-1", { generationId: stored.id, html: "<html><body>no slides</body></html>", expectedRevision: 1 }))
+      .rejects.toMatchObject({ code: "INVALID_INPUT" });
+    expect(repo.saveDesign).not.toHaveBeenCalled();
+  });
+
+  it("reports a conflict when the design save loses the revision race", async () => {
+    vi.mocked(repo.saveDesign).mockResolvedValueOnce(null);
+    const designHtml = '<html><head><style>.slai-slide{color:red}</style></head><body><div class="slai-slide" data-slide-number="1">Hi</div></body></html>';
+    await expect(service.saveDesign("user-1", { generationId: stored.id, html: designHtml, expectedRevision: 1 })).rejects.toMatchObject({ code: "CONFLICT" });
   });
 });

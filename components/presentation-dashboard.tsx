@@ -138,15 +138,24 @@ function EmptyLibrary() {
 
 function PresentationCard({ item }: { item: PresentationSummary }) {
   return (
-    <Link className="flex min-h-44 flex-col rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-5 shadow-[0_2px_0_rgba(23,23,19,0.035)] hover:-translate-y-0.5 hover:border-stone-400 hover:bg-white" href={`/slides/${item.id}`}>
-      <div className="flex items-start justify-between gap-4">
-        <h2 className="line-clamp-2 font-semibold tracking-[-0.02em]">{item.title?.trim() || "Untitled presentation"}</h2>
-        <span className="shrink-0 rounded-full border border-[var(--line)] px-2 py-1 font-mono text-[10px] uppercase tracking-wide">{statusLabel[item.status]}</span>
-      </div>
-      <div className="mt-auto flex items-end justify-between gap-4 pt-7 text-xs text-[var(--muted)]">
-        <span>Revision {item.currentRevisionNumber ?? "-"}</span>
-        <time dateTime={item.updatedAt}>Updated {dateFormatter.format(new Date(item.updatedAt))}</time>
-      </div>
-    </Link>
+    <div className="flex min-h-44 flex-col rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-5 shadow-[0_2px_0_rgba(23,23,19,0.035)] hover:-translate-y-0.5 hover:border-stone-400 hover:bg-white">
+      <Link className="flex flex-1 flex-col" href={`/slides/${item.id}`}>
+        <div className="flex items-start justify-between gap-4">
+          <h2 className="line-clamp-2 font-semibold tracking-[-0.02em]">{item.title?.trim() || "Untitled presentation"}</h2>
+          <span className="shrink-0 rounded-full border border-[var(--line)] px-2 py-1 font-mono text-[10px] uppercase tracking-wide">{statusLabel[item.status]}</span>
+        </div>
+        <div className="mt-auto flex items-end justify-between gap-4 pt-7 text-xs text-[var(--muted)]">
+          <span>Revision {item.currentRevisionNumber ?? "-"}</span>
+          <time dateTime={item.updatedAt}>Updated {dateFormatter.format(new Date(item.updatedAt))}</time>
+        </div>
+      </Link>
+      {/* No backend field distinguishes design-bootstrapped from AI-generated
+          presentations yet (see openspec/changes/add-visual-slide-design-editor
+          task 4.4), so every card offers a manual link to the design editor
+          rather than guessing which editor a given presentation "belongs" to. */}
+      <Link className="mt-3 text-xs font-medium text-[var(--accent)] underline underline-offset-4" href={`/slides/${item.id}/design`}>
+        Open in design editor
+      </Link>
+    </div>
   );
 }

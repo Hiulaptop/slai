@@ -1,5 +1,5 @@
-import { SlideCreationWorkspace } from "@/components/slide-creation-workspace";
+import { SlideCreationEntry } from "@/components/slide-creation-entry";
 
 export default function NewPresentationPage() {
-  return <SlideCreationWorkspace />;
+  return <SlideCreationEntry />;
 }

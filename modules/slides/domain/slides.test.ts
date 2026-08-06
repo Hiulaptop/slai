@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractSlides, replaceSlides, slideNumbers, validatePresentationHtml, validateReplacementHtml } from "./html";
+import { buildBlankPresentationHtml, extractSlides, replaceSlides, slideNumbers, validatePresentationHtml, validateReplacementHtml } from "./html";
 import { parseModelJson } from "./model-output";
 import { editSystemPrompt, generationSystemPrompt, OUTLINE_SYSTEM_PROMPT } from "./prompts";
 import { approvedOutlineSchema, batchEditSchema, creationMetadataSchema, editResponseSchema, outlineSchema } from "./slide.schemas";
@@ -63,5 +63,14 @@ describe("slide domain", () => {
     expect(extractSlides(updated, [1])[1]).toContain("One");
     expect(extractSlides(updated, [2])[2]).toContain("Changed");
     expect(() => validateReplacementHtml('<div class="slai-slide" data-slide-number="1">Wrong</div>', 2)).toThrow();
+  });
+  it("builds a sanitized blank presentation with contiguous slide wrappers", () => {
+    const blank = buildBlankPresentationHtml(3);
+    expect(slideNumbers(blank)).toEqual([1, 2, 3]);
+    expect(blank).toContain('id="slai-layout-constraints"');
+    expect(blank).not.toContain("<script");
+  });
+  it("defaults a single-slide blank document to slide number 1", () => {
+    expect(slideNumbers(buildBlankPresentationHtml(1))).toEqual([1]);
   });
 });
