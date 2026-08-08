@@ -144,7 +144,7 @@ An edit creates one revision for the entire batch. Undo moves the current revisi
 
 ## Requirements
 
-- Node.js 20.9 or newer
+- Node.js 22.22.2 or newer
 - pnpm
 - MySQL 8+ or a compatible MariaDB server
 - A running CLIProxy endpoint compatible with either the OpenAI Chat Completions API or Gemini API

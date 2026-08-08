@@ -37,7 +37,7 @@ Never add the server `.env`, private keys, or database credentials to the reposi
 Run these checks as the deploy user and use a dedicated checkout path. Do not point `DEPLOY_PATH` at a home directory or an unrelated working tree.
 
 ```bash
-node --version       # Node.js 20.9+
+node --version       # Node.js 22.22.2+
 pnpm --version       # pnpm 10.x
 git --version
 test -x /usr/bin/pm2
