@@ -1,0 +1,189 @@
+name: SLAI CI/CD
+
+on:
+  pull_request:
+    branches:
+      - deploy/ci-cd
+    types:
+      - opened
+      - synchronize
+      - reopened
+  push:
+    branches:
+      - deploy/ci-cd
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Optional commit SHA to validate and deploy for a controlled release or rollback
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: slai-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: 20.x
+  PNPM_VERSION: 10.32.1
+
+jobs:
+  quality:
+    name: Quality gate
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: mysql://ci:ci@127.0.0.1:3306/slai
+      JWT_SECRET: ci-only-secret-not-used-for-deployment
+      CLIPROXY_PROVIDER: openai
+      CLIPROXY_BASE_URL: http://127.0.0.1:8317
+      CLIPROXY_API_KEY: ci-only-key-not-used-for-deployment
+      SLIDE_MODEL_ID: ci-only-model
+    steps:
+      - name: Check out selected commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha || github.sha }}
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm db:generate
+
+      - name: Validate Prisma schema
+        run: pnpm db:validate
+
+      - name: Type-check
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build production application
+        run: pnpm build
+
+  deploy:
+    name: Deploy with PM2
+    needs: quality
+    if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/deploy/ci-cd') || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: slai-deploy
+      url: ${{ vars.HEALTHCHECK_URL || 'https://slai.studev.net/' }}
+    env:
+      DEPLOY_SHA: ${{ inputs.commit_sha || github.sha }}
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+      APP_PORT: ${{ vars.APP_PORT || '3000' }}
+      HEALTHCHECK_URL: ${{ vars.HEALTHCHECK_URL || 'https://slai.studev.net/' }}
+    steps:
+      - name: Validate deployment configuration
+        env:
+          DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+
+          for variable in DEPLOY_HOST DEPLOY_USER DEPLOY_PATH DEPLOY_SHA APP_PORT HEALTHCHECK_URL; do
+            if [[ -z "${!variable:-}" ]]; then
+              echo "::error title=Missing deployment configuration::${variable} is not configured"
+              exit 1
+            fi
+          done
+
+          for variable in DEPLOY_SSH_PRIVATE_KEY DEPLOY_KNOWN_HOSTS; do
+            if [[ -z "${!variable:-}" ]]; then
+              echo "::error title=Missing deployment secret::${variable} is not configured"
+              exit 1
+            fi
+          done
+
+      - name: Configure pinned SSH identity
+        env:
+          DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/id_ed25519"
+          chmod 644 "$HOME/.ssh/known_hosts"
+
+      - name: Deploy exact commit and restart PM2
+        run: |
+          set -Eeuo pipefail
+          ssh \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            bash -s -- "$DEPLOY_PATH" "$DEPLOY_SHA" "$APP_PORT" <<'REMOTE'
+          set -Eeuo pipefail
+
+          deploy_path="$1"
+          deploy_sha="$2"
+          app_port="$3"
+
+          [[ "$deploy_path" = /* ]] || { echo "DEPLOY_PATH must be absolute" >&2; exit 1; }
+          [[ -d "$deploy_path" ]] || { echo "DEPLOY_PATH does not exist: $deploy_path" >&2; exit 1; }
+          [[ -d "$deploy_path/.git" ]] || { echo "DEPLOY_PATH is not a git checkout: $deploy_path" >&2; exit 1; }
+          command -v git >/dev/null
+          command -v pnpm >/dev/null
+          [[ -x /usr/bin/pm2 ]] || { echo "/usr/bin/pm2 is not executable" >&2; exit 1; }
+
+          cd "$deploy_path"
+          git fetch --prune origin '+refs/heads/*:refs/remotes/origin/*'
+          git cat-file -e "${deploy_sha}^{commit}" || { echo "Commit is not available on the server: $deploy_sha" >&2; exit 1; }
+          git reset --hard "$deploy_sha"
+
+          pnpm install --frozen-lockfile
+          pnpm db:generate
+          pnpm db:deploy
+          pnpm build
+
+          PORT="$app_port" SLAI_APP_DIR="$deploy_path" /usr/bin/pm2 startOrRestart ecosystem.config.cjs --update-env
+          /usr/bin/pm2 save
+          REMOTE
+
+      - name: Verify public service
+        run: |
+          set -Eeuo pipefail
+
+          if ! curl \
+            --fail \
+            --silent \
+            --show-error \
+            --location \
+            --max-time 15 \
+            --retry 6 \
+            --retry-delay 5 \
+            --retry-all-errors \
+            "$HEALTHCHECK_URL" >/dev/null; then
+            echo "::error title=Health check failed::Inspect /usr/bin/pm2 status and /usr/bin/pm2 logs slai on the server"
+            exit 1
+          fi
+
+          {
+            echo "## SLAI deployment"
+            echo "- Commit: \`$DEPLOY_SHA\`"
+            echo "- Health check: $HEALTHCHECK_URL"
+            echo "- PM2 process: \`slai\`"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -239,6 +239,10 @@ The application is available at [http://localhost:3000](http://localhost:3000).
 | `pnpm db:deploy` | Apply existing migrations non-interactively |
 | `pnpm db:studio` | Open Prisma Studio |
 
+## Deployment
+
+The initial GitHub Actions rollout and PM2/server setup are documented in [Docs/DEPLOYMENT.md](Docs/DEPLOYMENT.md). CI currently targets pull requests to `deploy/ci-cd`; deployment uses `/usr/bin/pm2` and verifies `https://slai.studev.net` after restart.
+
 Recommended verification before a pull request:
 
 ```bash
