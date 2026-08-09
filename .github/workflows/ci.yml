@@ -1,0 +1,82 @@
+name: SLAI CI
+
+on:
+  pull_request:
+    branches:
+      - master
+    types:
+      - opened
+      - synchronize
+      - reopened
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Optional commit SHA to validate for a controlled release or rollback
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      commit_sha:
+        description: Optional commit SHA to validate when called by the CD workflow
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: slai-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: 22.22.3
+  PNPM_VERSION: 10.32.1
+
+jobs:
+  quality:
+    name: Quality gate
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: mysql://ci:ci@127.0.0.1:3306/slai
+      JWT_SECRET: ci-only-secret-not-used-for-deployment
+      CLIPROXY_PROVIDER: openai
+      CLIPROXY_BASE_URL: http://127.0.0.1:8317
+      CLIPROXY_API_KEY: ci-only-key-not-used-for-deployment
+      SLIDE_MODEL_ID: ci-only-model
+    steps:
+      - name: Check out selected commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha || github.sha }}
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm db:generate
+
+      - name: Validate Prisma schema
+        run: pnpm db:validate
+
+      - name: Type-check
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build production application
+        run: pnpm build

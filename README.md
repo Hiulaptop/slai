@@ -241,7 +241,7 @@ The application is available at [http://localhost:3000](http://localhost:3000).
 
 ## Deployment
 
-The initial GitHub Actions rollout and PM2/server setup are documented in [Docs/DEPLOYMENT.md](Docs/DEPLOYMENT.md). CI currently targets pull requests to `deploy/ci-cd`; deployment uses `/usr/bin/pm2` and verifies `https://slai.studev.net` after restart.
+The GitHub Actions CI/CD workflows and PM2/server setup are documented in [Docs/DEPLOYMENT.md](Docs/DEPLOYMENT.md). CI targets pull requests to `master`; deployment uses `/usr/bin/pm2` and performs a temporarily non-blocking check of `https://slai.studev.net` after restart.
 
 Recommended verification before a pull request:
 
