@@ -144,7 +144,7 @@ An edit creates one revision for the entire batch. Undo moves the current revisi
 
 ## Requirements
 
-- Node.js 20.9 or newer
+- Node.js 22.22.2 or newer
 - pnpm
 - MySQL 8+ or a compatible MariaDB server
 - A running CLIProxy endpoint compatible with either the OpenAI Chat Completions API or Gemini API
@@ -238,6 +238,10 @@ The application is available at [http://localhost:3000](http://localhost:3000).
 | `pnpm db:migrate` | Create/apply a development migration |
 | `pnpm db:deploy` | Apply existing migrations non-interactively |
 | `pnpm db:studio` | Open Prisma Studio |
+
+## Deployment
+
+The GitHub Actions CI/CD workflows and PM2/server setup are documented in [Docs/DEPLOYMENT.md](Docs/DEPLOYMENT.md). CI targets pull requests to `master`; deployment uses `/usr/bin/pm2` and performs a temporarily non-blocking check of `https://slai.studev.net` after restart.
 
 Recommended verification before a pull request:
 
