@@ -3,7 +3,7 @@ name: SLAI CD
 on:
   push:
     branches:
-      - master
+      - deploy/ci-cd
   workflow_dispatch:
     inputs:
       commit_sha:
