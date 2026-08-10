@@ -30,6 +30,9 @@ jobs:
   deploy:
     name: Deploy with PM2
     needs: quality
+    permissions:
+      contents: read
+
     if: ${{ needs.quality.result == 'success' }}
     runs-on: ubuntu-latest
     environment:
@@ -71,6 +74,8 @@ jobs:
         run: |
           set -Eeuo pipefail
           install -d -m 700 "$HOME/.ssh"
+          trap 'rm -f "$HOME/.ssh/id_ed25519"' EXIT
+
           printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
           chmod 600 "$HOME/.ssh/id_ed25519"
@@ -115,7 +120,7 @@ jobs:
       - name: Verify public service
         # Temporary: DNS/Cloudflare public hostname is not ready yet.
         # Keep collecting the result without blocking the deployment.
-        continue-on-error: true
+        continue-on-error: false
         run: |
           set -Eeuo pipefail
 
