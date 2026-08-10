@@ -3,7 +3,7 @@ name: SLAI CI
 on:
   pull_request:
     branches:
-      - deploy/ci-cd
+      - master
     types:
       - opened
       - synchronize

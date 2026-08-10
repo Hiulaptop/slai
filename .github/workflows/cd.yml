@@ -3,7 +3,7 @@ name: SLAI CD
 on:
   push:
     branches:
-      - deploy/ci-cd
+      - master
   workflow_dispatch:
     inputs:
       commit_sha:
@@ -83,6 +83,7 @@ jobs:
       - name: Deploy exact commit and restart PM2
         run: |
           set -Eeuo pipefail
+          trap 'rm -f "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"' EXIT
           ssh \
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
@@ -116,9 +117,12 @@ jobs:
           /usr/bin/pm2 save
           REMOTE
 
+      - name: Clean up SSH identity
+        if: ${{ always() }}
+        run: |
+          rm -f "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
+
       - name: Verify public service
-        # Temporary: DNS/Cloudflare public hostname is not ready yet.
-        # Keep collecting the result without blocking the deployment.
         continue-on-error: false
         run: |
           set -Eeuo pipefail
