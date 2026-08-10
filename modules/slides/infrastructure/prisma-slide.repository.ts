@@ -109,7 +109,7 @@ export class PrismaSlideRepository implements SlideRepository {
       if (generation.currentRevisionNumber === null) return null;
       const revisions = await tx.slideRevision.findMany({ where: { slideGenerationId: generation.id }, orderBy: { revisionNumber: "desc" } });
       const target = previousSlideRevision(revisions, generation.currentRevisionNumber, slideNumber, generation.htmlContent!);
-      if (!target) return null;
+      if (!target || target.htmlContent === null) return null;
       const replacement = extractSlides(target.htmlContent, [slideNumber])[slideNumber];
       const html = replaceSlides(generation.htmlContent!, new Map([[slideNumber, replacement]]));
       const updated = await tx.slideGeneration.updateMany({ where: { id: generation.id, userId: generation.userId, currentRevisionNumber: generation.currentRevisionNumber, nextRevisionNumber: generation.nextRevisionNumber }, data: { currentRevisionNumber: generation.nextRevisionNumber, nextRevisionNumber: { increment: 1 }, htmlContent: html } });
@@ -126,8 +126,13 @@ export class PrismaSlideRepository implements SlideRepository {
   }
 }
 
-type Revision = { revisionNumber: number; parentRevisionNumber: number | null; operation: string; editRequest: unknown; htmlContent: string };
+type Revision = { revisionNumber: number; parentRevisionNumber: number | null; operation: string; editRequest: unknown; htmlContent: string | null };
 
+// Legacy HTML-based undo history walk. A revision with null htmlContent is
+// a structured-only revision (see the structured persistence models in
+// prisma/schema.prisma) and has no HTML to diff against here, so it's
+// skipped rather than crashing - this path only still runs for generations
+// that haven't been converted to structured revisions.
 function previousSlideRevision(revisions: Revision[], currentNumber: number, slideNumber: number, currentHtml: string) {
   const byNumber = new Map(revisions.map((revision) => [revision.revisionNumber, revision]));
   const current = byNumber.get(currentNumber);
@@ -139,6 +144,10 @@ function previousSlideRevision(revisions: Revision[], currentNumber: number, sli
     if (!revision) return null;
     if (revision.operation === "UNDO" && isUndoRequest(revision.editRequest, slideNumber)) {
       cursor = byNumber.get(revision.editRequest.restoredFromRevision)?.parentRevisionNumber ?? null;
+      continue;
+    }
+    if (revision.htmlContent === null) {
+      cursor = revision.parentRevisionNumber;
       continue;
     }
     const candidate = extractSlides(revision.htmlContent, [slideNumber])[slideNumber];
