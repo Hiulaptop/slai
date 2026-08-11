@@ -27,13 +27,17 @@ import { resolveStructuredSlides, writeStructuredRevision } from "./write";
 
 let databaseAvailable = true;
 
+// A real connection pool's first query - especially right after the MySQL
+// container starts, or when the full suite's parallel workers contend for
+// connections - can take longer than vitest's default 10s hook timeout, so
+// this reachability probe gets explicit headroom.
 beforeAll(async () => {
   try {
     await db.$queryRaw`SELECT 1`;
   } catch {
     databaseAvailable = false;
   }
-});
+}, 30_000);
 
 const createdGenerationIds: string[] = [];
 

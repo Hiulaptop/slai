@@ -1,17 +1,22 @@
 "use client";
 
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { createElement, useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactElement } from "react";
 
 import {
   clampToSlide,
+  CURRENT_ANIMATION_REGISTRY_VERSION,
+  DEFAULT_ELEMENT_SIZE,
+  elementRegistry,
+  isTextElement,
   SLIDE_HEIGHT,
   SLIDE_WIDTH,
-  type DesignSlide,
-  type SlideElement,
-  type SlideElementType,
+  type CanvasToolKind,
+  type ElementNode,
+  type SlideDocument,
 } from "@/lib/slides/design-document";
+import type { RenderNode } from "@/modules/slides/domain/structured/element-registry";
 
-export type CanvasTool = "select" | SlideElementType;
+export type CanvasTool = "select" | CanvasToolKind;
 
 type ResizeHandle = "nw" | "ne" | "sw" | "se";
 
@@ -32,13 +37,13 @@ interface DragState {
   startBounds: Bounds;
 }
 
-export const DEFAULT_ELEMENT_SIZE: Record<SlideElementType, { width: number; height: number }> = {
-  text: { width: 260, height: 48 },
-  rectangle: { width: 180, height: 100 },
-  ellipse: { width: 160, height: 120 },
-  line: { width: 200, height: 100 },
-  image: { width: 220, height: 160 },
-};
+function elementBounds(element: ElementNode): Bounds {
+  return { x: element.geometry.x ?? 0, y: element.geometry.y ?? 0, width: element.geometry.width ?? DEFAULT_ELEMENT_SIZE.rectangle.width, height: element.geometry.height ?? DEFAULT_ELEMENT_SIZE.rectangle.height };
+}
+
+function withBounds(element: ElementNode, bounds: Bounds): ElementNode {
+  return { ...element, geometry: { ...element.geometry, x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height } };
+}
 
 export function DesignCanvas({
   slide,
@@ -49,18 +54,18 @@ export function DesignCanvas({
   onCommitElements,
   onCreateElement,
 }: {
-  slide: DesignSlide;
+  slide: SlideDocument;
   tool: CanvasTool;
   selectedElementId: string | null;
   disabled?: boolean;
   onSelectElement(id: string | null): void;
-  onCommitElements(elements: SlideElement[]): void;
-  onCreateElement(type: SlideElementType, x: number, y: number): void;
+  onCommitElements(elements: ElementNode[]): void;
+  onCreateElement(type: CanvasToolKind, x: number, y: number): void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [scale, setScale] = useState(1);
   const [drag, setDrag] = useState<DragState | null>(null);
-  const [draftElements, setDraftElements] = useState<SlideElement[] | null>(null);
+  const [draftElements, setDraftElements] = useState<ElementNode[] | null>(null);
   const [editingTextId, setEditingTextId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -108,34 +113,19 @@ export function DesignCanvas({
     onCreateElement(tool, point.x - size.width / 2, point.y - size.height / 2);
   }
 
-  function beginMove(event: ReactPointerEvent<Element>, element: SlideElement) {
+  function beginMove(event: ReactPointerEvent<Element>, element: ElementNode) {
     if (disabled || tool !== "select") return;
     event.stopPropagation();
     onSelectElement(element.id);
     event.currentTarget.setPointerCapture(event.pointerId);
-    setDrag({
-      kind: "move",
-      elementId: element.id,
-      pointerId: event.pointerId,
-      startPointerX: event.clientX,
-      startPointerY: event.clientY,
-      startBounds: { x: element.x, y: element.y, width: element.width, height: element.height },
-    });
+    setDrag({ kind: "move", elementId: element.id, pointerId: event.pointerId, startPointerX: event.clientX, startPointerY: event.clientY, startBounds: elementBounds(element) });
   }
 
-  function beginResize(event: ReactPointerEvent<Element>, element: SlideElement, handle: ResizeHandle) {
+  function beginResize(event: ReactPointerEvent<Element>, element: ElementNode, handle: ResizeHandle) {
     if (disabled) return;
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
-    setDrag({
-      kind: "resize",
-      elementId: element.id,
-      handle,
-      pointerId: event.pointerId,
-      startPointerX: event.clientX,
-      startPointerY: event.clientY,
-      startBounds: { x: element.x, y: element.y, width: element.width, height: element.height },
-    });
+    setDrag({ kind: "resize", elementId: element.id, handle, pointerId: event.pointerId, startPointerX: event.clientX, startPointerY: event.clientY, startBounds: elementBounds(element) });
   }
 
   function handlePointerMove(event: ReactPointerEvent<HTMLDivElement>) {
@@ -149,7 +139,7 @@ export function DesignCanvas({
         drag.kind === "move"
           ? clampToSlide({ x: drag.startBounds.x + deltaX, y: drag.startBounds.y + deltaY, width: drag.startBounds.width, height: drag.startBounds.height })
           : resizeBounds(drag.startBounds, drag.handle ?? "se", deltaX, deltaY);
-      return { ...element, ...bounds };
+      return withBounds(element, bounds);
     });
     setDraftElements(next);
   }
@@ -162,7 +152,7 @@ export function DesignCanvas({
 
   function commitText(elementId: string, text: string) {
     onCommitElements(
-      slide.elements.map((element) => (element.id === elementId && element.type === "text" ? { ...element, text } : element)),
+      slide.elements.map((element) => (element.id === elementId && isTextElement(element) ? { ...element, props: { ...element.props, text } } : element)),
     );
   }
 
@@ -184,12 +174,12 @@ export function DesignCanvas({
         role="presentation"
         style={{ width: SLIDE_WIDTH, height: SLIDE_HEIGHT, transform: `scale(${scale})`, cursor: tool === "select" ? "default" : "crosshair" }}
       >
-        {[...elements].sort((a, b) => a.zIndex - b.zIndex).map((element) => (
+        {[...elements].sort((a, b) => (a.geometry.zIndex ?? 0) - (b.geometry.zIndex ?? 0)).map((element) => (
           <CanvasElement
             key={element.id}
             element={element}
             editing={editingTextId === element.id}
-            onStartEdit={() => tool === "select" && element.type === "text" && setEditingTextId(element.id)}
+            onStartEdit={() => tool === "select" && isTextElement(element) && setEditingTextId(element.id)}
             onCommitText={(text) => {
               commitText(element.id, text);
               setEditingTextId(null);
@@ -205,6 +195,34 @@ export function DesignCanvas({
   );
 }
 
+function attrsToProps(attrs: Record<string, string> | undefined): Record<string, unknown> {
+  if (!attrs) return {};
+  const props: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(attrs)) props[key === "class" ? "className" : key] = value;
+  return props;
+}
+
+function styleObjectFrom(style: Record<string, string | number> | undefined): CSSProperties {
+  if (!style) return {};
+  const result: Record<string, string | number> = {};
+  for (const [property, value] of Object.entries(style)) {
+    const camel = property.startsWith("--") ? property : property.replace(/-([a-z])/g, (_match, letter: string) => letter.toUpperCase());
+    result[camel] = value;
+  }
+  return result as CSSProperties;
+}
+
+// Generic RenderNode -> React element conversion, shared by every element
+// type through the registry's render() output - this is what keeps the
+// canvas free of per-type rendering branches (task 6.1's "registry-backed
+// dispatch"); only the interactive wrapper below is per-element-instance,
+// never per-type.
+function renderNodeToJsx(node: RenderNode, key?: React.Key): ReactElement {
+  const props: Record<string, unknown> = { key, style: styleObjectFrom(node.style), ...attrsToProps(node.attrs) };
+  const children = node.children?.map((child, index) => renderNodeToJsx(child, index));
+  return createElement(node.tag, props, node.text ?? children);
+}
+
 function CanvasElement({
   element,
   editing,
@@ -212,68 +230,54 @@ function CanvasElement({
   onCommitText,
   onPointerDown,
 }: {
-  element: SlideElement;
+  element: ElementNode;
   editing: boolean;
   onStartEdit(): void;
   onCommitText(text: string): void;
   onPointerDown(event: ReactPointerEvent<Element>): void;
 }) {
-  const style = { position: "absolute" as const, left: element.x, top: element.y, width: element.width, height: element.height, zIndex: element.zIndex };
+  const position: CSSProperties = {
+    position: "absolute",
+    left: element.geometry.x ?? 0,
+    top: element.geometry.y ?? 0,
+    width: element.geometry.width ?? undefined,
+    height: element.geometry.height ?? undefined,
+    zIndex: element.geometry.zIndex ?? 0,
+  };
 
-  if (element.type === "text") {
-    if (editing) {
-      return (
-        <textarea
-          autoFocus
-          className="resize-none rounded border-2 border-[var(--accent)] p-1 text-left outline-none"
-          defaultValue={element.text}
-          onBlur={(event) => onCommitText(event.target.value)}
-          style={{ ...style, fontSize: element.fontSize, color: element.color, textAlign: element.align }}
-        />
-      );
-    }
+  if (isTextElement(element) && editing) {
+    const props = element.props;
     return (
-      <div
-        className="cursor-move overflow-hidden break-words"
-        onDoubleClick={onStartEdit}
-        onPointerDown={onPointerDown}
-        style={{ ...style, fontSize: element.fontSize, color: element.color, textAlign: element.align }}
-      >
-        {element.text || "Text"}
-      </div>
-    );
-  }
-
-  if (element.type === "rectangle" || element.type === "ellipse") {
-    return (
-      <div
-        className="cursor-move"
-        onPointerDown={onPointerDown}
-        style={{ ...style, background: element.fill, border: `2px solid ${element.stroke}`, borderRadius: element.type === "ellipse" ? "50%" : undefined }}
+      <textarea
+        autoFocus
+        className="resize-none rounded border-2 border-[var(--accent)] p-1 text-left outline-none"
+        defaultValue={props.text}
+        onBlur={(event) => onCommitText(event.target.value)}
+        style={{ ...position, fontSize: props.fontSize, color: props.color, textAlign: props.align, fontWeight: props.bold ? 700 : props.fontWeight, fontStyle: props.italic ? "italic" : "normal" }}
       />
     );
   }
 
-  if (element.type === "line") {
-    return (
-      <svg className="cursor-move" onPointerDown={onPointerDown} style={style} viewBox={`0 0 ${element.width} ${element.height}`} preserveAspectRatio="none">
-        <line x1="0" y1="0" x2={element.width} y2={element.height} stroke={element.stroke} strokeWidth={2} />
-      </svg>
-    );
-  }
-
-  return (
-    // eslint-disable-next-line @next/next/no-img-element -- local data: URL, next/image cannot optimize it and adds no value here
-    <img alt={element.alt} className="cursor-move object-contain" onPointerDown={onPointerDown} src={element.src} style={style} />
-  );
+  const rendered = elementRegistry.render(CURRENT_ANIMATION_REGISTRY_VERSION, element);
+  const style = { ...styleObjectFrom(rendered.style), ...position };
+  const props: Record<string, unknown> = {
+    style,
+    className: "cursor-move",
+    onPointerDown,
+    onDoubleClick: isTextElement(element) ? onStartEdit : undefined,
+    ...attrsToProps(rendered.attrs),
+  };
+  const children = rendered.children?.map((child, index) => renderNodeToJsx(child, index));
+  return createElement(rendered.tag, props, rendered.text ?? children);
 }
 
-function SelectionOutline({ element, onResizeStart }: { element: SlideElement; onResizeStart(event: ReactPointerEvent<Element>, handle: ResizeHandle): void }) {
+function SelectionOutline({ element, onResizeStart }: { element: ElementNode; onResizeStart(event: ReactPointerEvent<Element>, handle: ResizeHandle): void }) {
   const handles: ResizeHandle[] = ["nw", "ne", "sw", "se"];
+  const bounds = elementBounds(element);
   return (
     <div
       className="pointer-events-none absolute border-2 border-dashed border-[var(--accent)]"
-      style={{ left: element.x, top: element.y, width: element.width, height: element.height, zIndex: 9999 }}
+      style={{ left: bounds.x, top: bounds.y, width: bounds.width, height: bounds.height, zIndex: 9999 }}
     >
       {handles.map((handle) => (
         <span

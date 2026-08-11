@@ -16,7 +16,7 @@ const blankDetail: PresentationDetail = {
   title: "My design",
   status: "COMPLETED",
   outline: null,
-  html: null,
+  document: { animationRegistryVersion: 1, slides: [{ number: 1, width: 960, height: 540, props: {}, elements: [] }] },
   revisionNumber: 1,
   undoableSlideNumbers: [],
   createdAt: "2026-08-01T00:00:00.000Z",
@@ -37,7 +37,7 @@ async function clickCanvas() {
 }
 
 describe("DesignEditor", () => {
-  it("loads the presentation and starts from a single blank slide when there is no saved HTML yet", async () => {
+  it("loads the presentation and starts from its blank slide", async () => {
     render(<DesignEditor generationId="design-1" />);
     expect(await screen.findByLabelText("Presentation title")).toHaveValue("My design");
     expect(screen.getByLabelText("Slide canvas")).toBeVisible();
@@ -56,6 +56,7 @@ describe("DesignEditor", () => {
     expect(screen.getByRole("button", { name: "Bring forward" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Send backward" })).toBeDisabled();
     expect(screen.getByRole("button", { name: /^Save$/ })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Properties" })).toBeVisible();
   });
 
   it("adds slides and refuses to delete the last remaining slide", async () => {
@@ -72,7 +73,33 @@ describe("DesignEditor", () => {
     expect(screen.getByRole("button", { name: "Delete slide 1" })).toBeDisabled();
   });
 
-  it("saves the serialized document with the expected revision and clears the dirty flag", async () => {
+  it("creates a table with pre-populated cells", async () => {
+    const user = userEvent.setup();
+    render(<DesignEditor generationId="design-1" />);
+    await screen.findByLabelText("Slide canvas");
+
+    await user.click(screen.getByRole("button", { name: "Table" }));
+    await clickCanvas();
+
+    expect(screen.getByText("1 element")).toBeVisible();
+    expect(screen.getByLabelText("Edit cell row 1 column 1")).toBeVisible();
+    expect(screen.getByLabelText("Edit cell row 2 column 2")).toBeVisible();
+  });
+
+  it("edits a table cell's text content through the properties panel", async () => {
+    const user = userEvent.setup();
+    render(<DesignEditor generationId="design-1" />);
+    await screen.findByLabelText("Slide canvas");
+    await user.click(screen.getByRole("button", { name: "Table" }));
+    await clickCanvas();
+
+    await user.click(screen.getByLabelText("Edit cell row 1 column 1"));
+    const cellInput = await screen.findByLabelText(/Cell text \(row 1, column 1\)/);
+    await user.type(cellInput, "Revenue");
+    expect(cellInput).toHaveValue("Revenue");
+  });
+
+  it("saves the structured document with the expected revision and clears the dirty flag", async () => {
     const user = userEvent.setup();
     mocks.authFetch.mockResolvedValueOnce(Response.json(blankDetail));
     render(<DesignEditor generationId="design-1" />);
@@ -90,7 +117,7 @@ describe("DesignEditor", () => {
     expect(path).toBe("/api/slides/design/save");
     const body = JSON.parse((init as RequestInit).body as string);
     expect(body).toMatchObject({ generationId: "design-1", expectedRevision: 1 });
-    expect(body.html).toContain("data-slai-el-type=\"rectangle\"");
+    expect(body.slides[0].elements[0]).toMatchObject({ type: "shape", props: { shapeType: "rectangle" } });
   });
 
   it("shows a conflict message on 409 and lets the user reload", async () => {
@@ -109,7 +136,7 @@ describe("DesignEditor", () => {
     await waitFor(() => expect(mocks.authFetch).toHaveBeenLastCalledWith("/api/slides/design-1"));
   });
 
-  it("falls back to exporting the current unsaved canvas when a pre-download save fails", async () => {
+  it("downloads the server-rendered standalone HTML after saving", async () => {
     const user = userEvent.setup();
     const createObjectURL = vi.fn().mockReturnValue("blob:design");
     const revokeObjectURL = vi.fn();
@@ -121,22 +148,42 @@ describe("DesignEditor", () => {
     await user.click(screen.getByRole("button", { name: "Rectangle" }));
     await clickCanvas();
 
-    mocks.authFetch.mockResolvedValueOnce(new Response(null, { status: 500 }));
+    mocks.authFetch.mockResolvedValueOnce(Response.json({ ...blankDetail, revisionNumber: 2 }));
+    mocks.authFetch.mockResolvedValueOnce(new Response("<!doctype html><html></html>", { headers: { "content-type": "text/html" } }));
     await user.click(screen.getByRole("button", { name: "Download HTML" }));
 
     await waitFor(() => expect(click).toHaveBeenCalledOnce());
-    expect(await screen.findByText(/downloading your current unsaved changes instead/)).toBeVisible();
+    expect(mocks.authFetch.mock.calls.at(-1)?.[0]).toBe("/api/slides/design-1/download");
     const blob = createObjectURL.mock.calls[0][0] as Blob;
-    await expect(blob.text()).resolves.toContain("data-slai-el-type=\"rectangle\"");
+    await expect(blob.text()).resolves.toContain("<!doctype html>");
 
     click.mockRestore();
     vi.unstubAllGlobals();
+  });
+
+  it("shows an error and does not download when the pre-download save fails", async () => {
+    const user = userEvent.setup();
+    render(<DesignEditor generationId="design-1" />);
+    await screen.findByLabelText("Slide canvas");
+    await user.click(screen.getByRole("button", { name: "Rectangle" }));
+    await clickCanvas();
+
+    mocks.authFetch.mockResolvedValueOnce(new Response(null, { status: 500 }));
+    await user.click(screen.getByRole("button", { name: "Download HTML" }));
+
+    expect(await screen.findByText(/Could not save before download/)).toBeVisible();
   });
 
   it("shows a not-found state for an unavailable presentation", async () => {
     mocks.authFetch.mockResolvedValue(new Response(null, { status: 404 }));
     render(<DesignEditor generationId="missing" />);
     expect(await screen.findByRole("heading", { name: "Presentation not found" })).toBeVisible();
+  });
+
+  it("shows an unavailable state for a presentation with no structured document yet", async () => {
+    mocks.authFetch.mockResolvedValue(Response.json({ ...blankDetail, document: null }));
+    render(<DesignEditor generationId="design-1" />);
+    expect(await screen.findByRole("heading", { name: "Not available in the visual editor yet" })).toBeVisible();
   });
 
   it("retries generic load failures", async () => {

@@ -1,3 +1,9 @@
+import type { WireSlide } from "@/modules/slides/domain/structured/compose";
+import type { StructuredRevision } from "@/modules/slides/domain/structured/types";
+
+export type { ElementChild, ElementNode, SlideDocument, StructuredRevision } from "@/modules/slides/domain/structured/types";
+export type { WireElement, WireSlide } from "@/modules/slides/domain/structured/compose";
+
 export type UserStatus = "ACTIVE" | "DISABLED";
 
 export interface AuthUser {
@@ -64,7 +70,7 @@ export interface PresentationDetail {
   title: string | null;
   status: PresentationSummary["status"];
   outline: SlideOutline | null;
-  html: string | null;
+  document: StructuredRevision | null;
   revisionNumber: number | null;
   undoableSlideNumbers: number[];
   createdAt: string;
@@ -110,6 +116,6 @@ export interface TemplateListResponse {
 
 export interface DesignSaveRequest {
   generationId: string;
-  html: string;
+  slides: WireSlide[];
   expectedRevision: number | null;
 }

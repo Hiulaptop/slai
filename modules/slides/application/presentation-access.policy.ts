@@ -20,10 +20,12 @@ export class PresentationAccessPolicy {
       throw new SlideError("NOT_FOUND", "Presentation not found");
     }
 
+    // currentRevisionNumber !== null already implies at least one completed
+    // revision exists - htmlContent is not part of this check because a
+    // structured-only completion (see slide.service.ts) never sets it.
     if (
       operation === "mutate" &&
       (presentation.status !== "COMPLETED" ||
-        !presentation.htmlContent ||
         presentation.currentRevisionNumber === null)
     ) {
       throw new SlideError("CONFLICT", "Presentation is not complete");

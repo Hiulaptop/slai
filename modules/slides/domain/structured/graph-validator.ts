@@ -1,5 +1,10 @@
 import { SlideError } from "../slide.errors";
 import { assertGeometry, elementRegistry, slotMatches, type ChildPolicy } from "./element-registry";
+// Side-effect import: registers the initial element definitions into the
+// singleton registry above. Importing this here (rather than relying on
+// every caller to import it first) means validation works correctly no
+// matter which module reaches this validator first - see elements/index.ts.
+import "./elements";
 import {
   MAX_ELEMENT_DEPTH,
   MAX_EDGES_PER_COMMAND,
@@ -111,13 +116,30 @@ function childrenOf(nodeId: string, children: ElementChildCommand[]): ElementChi
   return children.filter((edge) => edge.parentId === nodeId).sort((a, b) => a.orderIndex - b.orderIndex);
 }
 
-export function validateSlides(slides: SlideCommand[], nodesById: Map<string, ElementNodeCommand>, children: ElementChildCommand[]): void {
+export interface ValidateSlidesOptions {
+  // A batch edit submits only the requested replacement slides (see
+  // design.md's "persist only requested replacement slide snapshots while
+  // preserving non-target snapshot IDs"), so that command is never a
+  // contiguous 1..N document - it's a sparse subset of an existing deck.
+  // Full-document commands (bootstrap, save, AI generation) keep the
+  // stricter contiguous-from-one check by default.
+  requireContiguousFromOne?: boolean;
+}
+
+export function validateSlides(
+  slides: SlideCommand[],
+  nodesById: Map<string, ElementNodeCommand>,
+  children: ElementChildCommand[],
+  options: ValidateSlidesOptions = {},
+): void {
+  const requireContiguousFromOne = options.requireContiguousFromOne ?? true;
   if (!slides.length) fail("A structured document must contain at least one slide");
   if (slides.length > MAX_SLIDES_PER_DOCUMENT) fail(`A structured document cannot exceed ${MAX_SLIDES_PER_DOCUMENT} slides`);
 
   const numbers = new Set<number>();
   slides.forEach((slide, index) => {
-    if (slide.number !== index + 1) fail("Slide numbers must be contiguous and one-based");
+    if (requireContiguousFromOne && slide.number !== index + 1) fail("Slide numbers must be contiguous and one-based");
+    if (!requireContiguousFromOne && (slide.number < 1 || slide.number > MAX_SLIDES_PER_DOCUMENT)) fail(`Slide number ${slide.number} is out of range`);
     if (numbers.has(slide.number)) fail(`Duplicate slide number: ${slide.number}`);
     numbers.add(slide.number);
     if (slide.width <= 0 || slide.height <= 0) fail(`Slide ${slide.number} must have a positive width and height`);
@@ -147,7 +169,12 @@ function walk(nodeId: string, depth: number, reachable: Set<string>, children: E
   }
 }
 
-export function validateStructuredCommand(nodes: ElementNodeCommand[], children: ElementChildCommand[], slides: SlideCommand[]): void {
+export function validateStructuredCommand(
+  nodes: ElementNodeCommand[],
+  children: ElementChildCommand[],
+  slides: SlideCommand[],
+  options: ValidateSlidesOptions = {},
+): void {
   const nodesById = validateNodesAndChildren(nodes, children);
-  validateSlides(slides, nodesById, children);
+  validateSlides(slides, nodesById, children, options);
 }

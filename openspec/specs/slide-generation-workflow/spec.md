@@ -1,6 +1,6 @@
 ## Purpose
 
-Define an authenticated, provider-neutral workflow for suggesting slide outlines, generating and editing validated HTML presentations, and preserving owned revision history.
+Define an authenticated, provider-neutral workflow for suggesting slide outlines, generating and editing validated structured presentations, and preserving owned revision history.
 
 ## Requirements
 
@@ -62,11 +62,11 @@ The system SHALL expose `GET /api/slides/{generationId}` to return the authentic
 
 #### Scenario: Retrieve owned completed presentation
 - **WHEN** the owner requests a valid completed presentation ID
-- **THEN** the system returns status `200` with ID, title, status, approved outline, current HTML, current revision number, provider/model metadata, finish reason, token usage, and lifecycle timestamps
+- **THEN** the system returns status `200` with ID, title, status, approved outline, current structured document, current revision number, provider/model metadata, finish reason, token usage, and lifecycle timestamps without embedding rendered HTML
 
 #### Scenario: Retrieve owned in-progress or failed presentation
 - **WHEN** the owner requests their pending, processing, or failed presentation
-- **THEN** the system returns status `200` with its lifecycle status and nullable unavailable output fields
+- **THEN** the system returns status `200` with its lifecycle status and nullable unavailable structured output fields
 
 #### Scenario: Missing or non-owned detail
 - **WHEN** the ID does not exist or belongs to another user
@@ -76,12 +76,27 @@ The system SHALL expose `GET /api/slides/{generationId}` to return the authentic
 - **WHEN** `generationId` is not a valid UUID
 - **THEN** the system returns status `400` without querying an unscoped presentation
 
+### Requirement: Structured presentation rendering and download
+The system SHALL expose owner-authorized rendering and standalone download for a completed structured presentation without persisting the generated HTML.
+
+#### Scenario: Render owned presentation
+- **WHEN** the authenticated owner requests rendered output for a completed presentation
+- **THEN** the system resolves the current structured revision and returns safe complete HTML without changing presentation or revision state
+
+#### Scenario: Download owned presentation
+- **WHEN** the authenticated owner requests the presentation download
+- **THEN** the system returns rendered `text/html` as an attachment with standalone navigation and no remote runtime dependency
+
+#### Scenario: Render missing or non-owned presentation
+- **WHEN** the presentation does not exist or belongs to another user
+- **THEN** the system returns the same status `404` response and renders nothing
+
 ### Requirement: Owned presentation deletion
-The system SHALL expose `DELETE /api/slides/{generationId}` to permanently remove an owned non-processing presentation and its revision snapshots.
+The system SHALL expose `DELETE /api/slides/{generationId}` to permanently remove an owned non-processing presentation and its structured revision graph.
 
 #### Scenario: Delete owned presentation
 - **WHEN** the owner deletes a pending, completed, or failed presentation
-- **THEN** the system atomically deletes it, cascades its slide revisions, and returns status `204` with no response body
+- **THEN** the system atomically deletes it, cascades its revision compositions and exclusively owned structured data, and returns status `204` with no response body
 
 #### Scenario: Delete processing presentation
 - **WHEN** the owner attempts to delete a presentation whose status is `PROCESSING`
@@ -103,7 +118,7 @@ The shared presentation access policy SHALL enforce lifecycle requirements indep
 - **THEN** the policy permits read access
 
 #### Scenario: Mutate completed presentation
-- **WHEN** an owner edits or undoes a `COMPLETED` presentation with current HTML and revision state
+- **WHEN** an owner edits or undoes a `COMPLETED` presentation with a valid current structured revision
 - **THEN** the policy permits mutation access
 
 #### Scenario: Mutate incomplete presentation
@@ -141,82 +156,67 @@ The system SHALL generate a presentation only from a valid user-approved outline
 
 #### Scenario: Successful presentation generation
 - **WHEN** an authenticated user submits valid `report`, `template`, and `outline` multipart fields to `POST /api/slides/generate`
-- **THEN** the system creates an owned generation, sends all three inputs under the generation system prompt, stores validated HTML and revision 1, and returns status `201` with the generation ID, outline, HTML, status, and provider metadata
+- **THEN** the system creates an owned generation, sends all three inputs under the generation system prompt, validates and stores structured revision 1, and returns status `201` with the generation ID, outline, structured document, status, and provider metadata
 
 #### Scenario: Invalid approved outline
 - **WHEN** the approved outline has extra keys, invalid lengths, duplicate/non-contiguous numbers, or more than 50 slides
 - **THEN** the system returns status `400` without creating a generation or calling the AI provider
 
 #### Scenario: Generation provider failure
-- **WHEN** the provider request or output validation fails after a generation row is created
+- **WHEN** the provider request or structured output validation fails after a generation row is created
 - **THEN** the system marks the generation `FAILED`, stores a stable non-sensitive error, and returns status `502`
 
-### Requirement: Presentation HTML contract
-The system MUST accept and persist only sanitized complete HTML5 presentations whose slides match the approved outline and use the required wrapper contract.
-
-#### Scenario: Valid presentation HTML
-- **WHEN** model output contains one complete document and exactly one wrapper per approved slide using `<div class="slai-slide" data-slide-number="N">`
-- **THEN** the system sanitizes and stores the document when wrapper numbers are unique, contiguous, one-based, non-nested, and equal the approved outline length
-
-#### Scenario: Invalid presentation structure
-- **WHEN** output contains Markdown fences, scripts, missing document elements, nested/missing/duplicate slide wrappers, non-contiguous numbers, or a wrapper count different from the outline
-- **THEN** the system rejects the output, stores no completed HTML revision, and returns status `502`
-
-#### Scenario: Oversized HTML output
-- **WHEN** sanitized presentation HTML exceeds 5 MiB
-- **THEN** the system rejects the output and returns status `502`
-
 ### Requirement: Template and report fidelity prompt
-The system SHALL use a centralized generation system prompt requiring factual content from the report, slide order/content intent from the approved outline, and visual language from the template.
+The system SHALL use a centralized generation system prompt requiring factual content from the report, slide order/content intent from the approved outline, visual language from the template, and output conforming to the registered structured slide document schema.
 
 #### Scenario: Generation prompt construction
 - **WHEN** the generation service constructs an AI request
-- **THEN** the system message defines the exact HTML wrapper contract, forbids Markdown and external scripts, identifies uploaded files as untrusted source data, and requires adherence to both report content and template design
+- **THEN** the system message defines the exact structured document contract, forbids Markdown and executable or remote content, identifies uploaded files as untrusted source data, and requires adherence to both report content and template design
 
 ### Requirement: Batch slide editing
-The system SHALL expose one batch-edit route that accepts a generation ID and a JSON array of numbered slide instructions, updates exactly the selected slides, and preserves the complete document structure.
+The system SHALL expose one batch-edit route that accepts a generation ID and a JSON array of numbered slide instructions, updates exactly the selected structured slides, and preserves non-target slide references.
 
 #### Scenario: Successful batch edit
 - **WHEN** the owner sends `{ "generationId": "...", "edits": [{ "slideNumber": 2, "prompt": "..." }] }` to `PATCH /api/slides/edit` with one or more unique existing slide numbers
-- **THEN** the system requests exactly one replacement wrapper for each item, validates all replacements, applies them atomically, appends one `EDIT` revision for the batch, and returns status `200` with updated HTML and revision metadata
+- **THEN** the system requests one structured replacement for each item, validates all replacements, applies them atomically, appends one `EDIT` revision for the batch, and returns status `200` with the updated structured document and revision metadata
 
 #### Scenario: Invalid edit request
 - **WHEN** `edits` is empty or exceeds 50 items, an item has extra keys, a prompt is blank or longer than 2,000 characters, slide numbers are duplicate or nonexistent, or the generation is incomplete
 - **THEN** the system returns status `400`, `404`, or `409` as appropriate without calling or persisting model output
 
 #### Scenario: Invalid edit model response
-- **WHEN** the model returns invalid JSON, a full document, a missing or additional slide, a duplicate or wrong slide number, active content, or malformed replacement HTML
-- **THEN** the system returns status `502`, applies none of the batch, and preserves the current HTML and revision pointer
+- **WHEN** the model returns invalid JSON, a missing or additional slide, a duplicate or wrong slide number, an unsupported element, an invalid graph, executable content, or malformed structured data
+- **THEN** the system returns status `502`, applies none of the batch, and preserves the current structured revision pointer
 
 #### Scenario: Non-target preservation
 - **WHEN** a batch edit succeeds
-- **THEN** every slide absent from the request remains unchanged in content, order, wrapper number, and styling
+- **THEN** every slide absent from the request retains the same immutable slide snapshot ID, order, and structured content
 
 #### Scenario: Multiple requested slides
 - **WHEN** a valid edit request contains instructions for multiple slides
 - **THEN** each selected slide is replaced according to its corresponding prompt and all replacements are committed in one revision
 
 ### Requirement: Revision history and undo
-The system SHALL preserve immutable full-HTML revision snapshots and maintain a current revision pointer that supports repeated undo and editing after undo.
+The system SHALL preserve immutable structurally shared revisions and maintain a current revision pointer that supports repeated undo and editing after undo.
 
-#### Scenario: Undo latest edit
-- **WHEN** the owner calls `POST /api/slides/{generationId}/undo` and the current revision has a parent
-- **THEN** the system restores the parent HTML, moves the current pointer to the parent, preserves all revision rows, and returns status `200`
+#### Scenario: Undo a changed slide
+- **WHEN** the owner calls `POST /api/slides/{generationId}/undo` for an undoable slide in the current revision
+- **THEN** the system appends an `UNDO` revision that restores the prior immutable snapshot for that slide, preserves non-target slide references and all historical revisions, and returns status `200`
 
 #### Scenario: Nothing to undo
-- **WHEN** the current revision is the initial generated revision or has no parent
-- **THEN** the system returns status `409` without changing HTML or revision history
+- **WHEN** the selected slide has no prior differing snapshot in the revision ancestry
+- **THEN** the system returns status `409` without changing structured data or revision history
 
 #### Scenario: Edit after undo
-- **WHEN** the user undoes to an earlier revision and then submits another edit batch
-- **THEN** the system creates a new monotonically numbered revision whose parent is the restored revision without overwriting the abandoned branch
+- **WHEN** the user undoes to earlier slide content and then submits another edit batch
+- **THEN** the system creates a new monotonically numbered revision whose parent is the undo revision without overwriting the abandoned branch
 
 #### Scenario: Concurrent stale mutation
-- **WHEN** concurrent batch edit or undo operations attempt to change the same current revision
-- **THEN** exactly one compare-and-swap update succeeds and stale operations return status `409` without orphan revisions
+- **WHEN** concurrent design save, batch edit, or undo operations attempt to change the same current revision
+- **THEN** exactly one compare-and-swap update succeeds and stale operations return status `409` without reachable or orphaned revisions
 
 ### Requirement: Slide generation persistence
-The system SHALL store owned generation state, approved outline, current sanitized HTML, provider metadata, token usage, lifecycle timestamps, and revision history without storing uploaded file bytes or base64.
+The system SHALL store owned generation state, approved outline, current structured revision pointer, provider metadata, token usage, lifecycle timestamps, and structurally shared revision history without storing uploaded file bytes, base64 file payloads, or rendered presentation HTML.
 
 #### Scenario: Persisted request metadata
 - **WHEN** generation begins
@@ -224,7 +224,7 @@ The system SHALL store owned generation state, approved outline, current sanitiz
 
 #### Scenario: Completed generation metadata
 - **WHEN** generation succeeds
-- **THEN** the system stores status `COMPLETED`, HTML, finish reason, token usage, completion time, current revision, and next revision allocator
+- **THEN** the system stores status `COMPLETED`, finish reason, token usage, completion time, current revision, next revision allocator, and structured revision composition without a full HTML snapshot
 
 ### Requirement: Provider-neutral AI integration
 The system SHALL select one configured CLIProxy adapter at the server composition boundary and SHALL keep slide routes independent of OpenAI/Gemini payload details.

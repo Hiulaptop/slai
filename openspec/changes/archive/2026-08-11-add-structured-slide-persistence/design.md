@@ -183,11 +183,13 @@ Batch edits replace only requested slide snapshots. Non-target slides retain the
 1. Add the new structured tables and versioned element/animation registries while retaining existing HTML columns and old read paths.
 2. Build and test the portable renderer, structured command schemas, graph validator, and repository read model before switching writes.
 3. Add dual-read migration tooling that classifies existing decks: deterministically parse supported design-marker HTML, flag unsupported legacy HTML, and verify rendered output for converted records.
-4. Switch blank design bootstrap and visual design save to structured writes behind a feature flag; keep legacy reads available during verification.
+4. Switch blank design bootstrap and visual design save to structured writes; keep legacy reads available during verification.
 5. Switch AI generation and batch edit prompts to strict structured output, then switch undo and detail/download paths to structured revisions.
 6. Backfill compatible historical presentations and publish an explicit retention or manual-conversion decision for every unsupported presentation.
 7. Stop writing HTML, monitor structured render/save errors, and only then remove `htmlContent` columns and legacy parser code in a separate irreversible migration step.
 8. Rollback before column removal by disabling structured writes and returning to the retained HTML path. After column removal, rollback requires restoring the pre-cutover backup and application version; therefore the destructive migration must have a tested backup and restore procedure.
+
+**Revised decision on stage 4 (no feature flag):** this project has no live production traffic yet, so there is no in-flight write path a flag would need to protect - every write this application makes is either pre-cutover (legacy HTML, still fully readable) or post-cutover (structured, the sole path for every new presentation). Sections 1-3 were built and fully tested (real-database integration tests, not mocks) *before* any write path was switched, which is the actual risk-reducing property stage 4's flag was meant to provide; a flag guarding a code path with no live traffic to protect would add branching with nothing to verify against. Bootstrap, save, AI generation, batch edit, and undo were therefore switched directly to structured writes (an explicit hard cutover, not a gradual one) once Sections 1-3 were proven. Legacy reads, the classifier, and the backfill tooling (stage 3, stage 6) are unaffected by this and remain exactly as specified. If this application later carries real user traffic before a comparable future migration, that migration should use a feature flag as originally planned here - this revision is specific to this change having shipped with no existing users to protect.
 
 ## Open Questions
 

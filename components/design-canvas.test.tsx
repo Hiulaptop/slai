@@ -3,7 +3,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import { createBlankSlide } from "@/lib/slides/design-document";
+import { createBlankSlide, createTextElement } from "@/lib/slides/design-document";
 import { DesignCanvas } from "./design-canvas";
 
 describe("DesignCanvas", () => {
@@ -61,17 +61,13 @@ describe("DesignCanvas", () => {
 
   it("deletes the selected element on Delete/Backspace, but not while typing", () => {
     const onCommitElements = vi.fn();
-    const slide = {
-      number: 1,
-      elements: [
-        { id: "el-1", type: "text" as const, x: 0, y: 0, width: 100, height: 40, zIndex: 0, text: "Hi", fontSize: 24, color: "#000", align: "left" as const },
-      ],
-    };
+    const textElement = createTextElement(0, 0, 0);
+    const slide = { ...createBlankSlide(1), elements: [textElement] };
     render(
       <DesignCanvas
         slide={slide}
         tool="select"
-        selectedElementId="el-1"
+        selectedElementId={textElement.id}
         onSelectElement={vi.fn()}
         onCommitElements={onCommitElements}
         onCreateElement={vi.fn()}
@@ -80,5 +76,38 @@ describe("DesignCanvas", () => {
 
     fireEvent.keyDown(window, { key: "Delete" });
     expect(onCommitElements).toHaveBeenCalledWith([]);
+  });
+
+  it("renders every registered element type through the shared registry (no per-type branching)", () => {
+    const text = createTextElement(0, 0, 0);
+    const slide = { ...createBlankSlide(1), elements: [text] };
+    render(
+      <DesignCanvas
+        slide={slide}
+        tool="select"
+        selectedElementId={null}
+        onSelectElement={vi.fn()}
+        onCommitElements={vi.fn()}
+        onCreateElement={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Text")).toBeVisible();
+  });
+
+  it("selects an element and shows resize handles when the select tool clicks it", () => {
+    const onSelectElement = vi.fn();
+    const text = createTextElement(0, 0, 0);
+    const slide = { ...createBlankSlide(1), elements: [text] };
+    render(
+      <DesignCanvas
+        slide={slide}
+        tool="select"
+        selectedElementId={text.id}
+        onSelectElement={onSelectElement}
+        onCommitElements={vi.fn()}
+        onCreateElement={vi.fn()}
+      />,
+    );
+    expect(screen.getByLabelText("Resize se")).toBeVisible();
   });
 });

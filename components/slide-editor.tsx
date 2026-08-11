@@ -4,9 +4,8 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { useAuth } from "@/lib/auth/auth-context";
-import { exportStandalonePresentation } from "@/lib/slides/export-document";
-import { extractSlides, type ExtractedSlide } from "@/lib/slides/slide-document";
-import type { ApiErrorBody, PresentationDetail, SlideEdit } from "@/lib/types";
+import { renderStructuredRevision } from "@/modules/slides/domain/structured/render";
+import type { ApiErrorBody, PresentationDetail, SlideDocument, SlideEdit } from "@/lib/types";
 
 type LoadState = "loading" | "ready" | "not-found" | "error";
 type Mutation = "edit" | "undo" | null;
@@ -14,7 +13,7 @@ type Mutation = "edit" | "undo" | null;
 export function SlideEditor({ generationId }: { generationId: string }) {
   const { authFetch } = useAuth();
   const [detail, setDetail] = useState<PresentationDetail | null>(null);
-  const [slides, setSlides] = useState<ExtractedSlide[]>([]);
+  const [slides, setSlides] = useState<SlideDocument[]>([]);
   const [selectedNumber, setSelectedNumber] = useState(1);
   const [drafts, setDrafts] = useState<Record<number, string>>({});
   const [loadState, setLoadState] = useState<LoadState>("loading");
@@ -22,6 +21,7 @@ export function SlideEditor({ generationId }: { generationId: string }) {
   const [reloadKey, setReloadKey] = useState(0);
   const [mutation, setMutation] = useState<Mutation>(null);
   const [mutationError, setMutationError] = useState("");
+  const [downloading, setDownloading] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -120,17 +120,26 @@ export function SlideEditor({ generationId }: { generationId: string }) {
     }
   }
 
-  function downloadHtml() {
-    if (!detail?.html) return;
-    const exportedHtml = exportStandalonePresentation(detail.html);
-    const url = URL.createObjectURL(new Blob([exportedHtml], { type: "text/html;charset=utf-8" }));
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `${downloadName(detail.title)}.html`;
-    document.body.append(anchor);
-    anchor.click();
-    anchor.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  async function downloadHtml() {
+    if (!detail) return;
+    setDownloading(true);
+    try {
+      const response = await authFetch(`/api/slides/${generationId}/download`);
+      if (!response.ok) throw new Error(await responseMessage(response, "This deck could not be downloaded."));
+      const html = await response.text();
+      const url = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8" }));
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `${downloadName(detail.title)}.html`;
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch (error) {
+      setMutationError(error instanceof Error ? error.message : "This deck could not be downloaded.");
+    } finally {
+      setDownloading(false);
+    }
   }
 
   if (loadState === "loading") return <EditorState title="Loading presentation" message="Preparing the editor..." busy />;
@@ -143,7 +152,7 @@ export function SlideEditor({ generationId }: { generationId: string }) {
     return (
       <EditorState
         title={failed ? "Generation failed" : "Presentation is still being generated"}
-        message={failed ? "No presentation HTML is available. Return to your library or try creating the presentation again." : "The presentation is not ready yet. Refresh its details to check again."}
+        message={failed ? "No presentation is available. Return to your library or try creating the presentation again." : "The presentation is not ready yet. Refresh its details to check again."}
         action={!failed ? <button className="ui-button ui-button-primary" type="button" onClick={retryLoad}>Refresh details</button> : undefined}
       />
     );
@@ -156,6 +165,7 @@ export function SlideEditor({ generationId }: { generationId: string }) {
   const editing = mutation === "edit";
   const mutating = mutation !== null;
   const undoAvailable = detail.undoableSlideNumbers.includes(selected.number);
+  const srcDoc = renderStructuredRevision({ animationRegistryVersion: detail.document?.animationRegistryVersion ?? 1, slides: [selected] });
 
   return (
     <main className="mx-auto max-w-[94rem] px-4 py-7 sm:px-7 sm:py-10">
@@ -166,7 +176,7 @@ export function SlideEditor({ generationId }: { generationId: string }) {
         </div>
         <div className="flex flex-wrap items-center gap-3 sm:justify-end">
           <p className="text-sm text-[var(--muted)]">Slide {selectedIndex + 1} of {slides.length} · Revision {detail.revisionNumber ?? "-"}</p>
-          <button className="ui-button ui-button-secondary" disabled={mutating} onClick={downloadHtml} type="button">Download HTML</button>
+          <button className="ui-button ui-button-secondary" disabled={mutating || downloading} onClick={() => void downloadHtml()} type="button">{downloading ? "Preparing..." : "Download HTML"}</button>
         </div>
       </header>
 
@@ -194,7 +204,7 @@ export function SlideEditor({ generationId }: { generationId: string }) {
             <iframe
               className="aspect-video w-full bg-white"
               sandbox="allow-same-origin"
-              srcDoc={selected.srcDoc}
+              srcDoc={srcDoc}
               title={`Slide ${selected.number} preview`}
             />
           </div>
@@ -268,14 +278,11 @@ async function loadDetail(authFetch: ReturnType<typeof useAuth>["authFetch"], ge
   }
 }
 
-function applyDetail(detail: PresentationDetail, setDetail: (detail: PresentationDetail) => void, setSlides: (slides: ExtractedSlide[]) => void, setSelectedNumber: React.Dispatch<React.SetStateAction<number>>) {
-  let extracted: ExtractedSlide[] = [];
-  if (detail.status === "COMPLETED" && detail.html) {
-    try { extracted = extractSlides(detail.html); } catch { extracted = []; }
-  }
+function applyDetail(detail: PresentationDetail, setDetail: (detail: PresentationDetail) => void, setSlides: (slides: SlideDocument[]) => void, setSelectedNumber: React.Dispatch<React.SetStateAction<number>>) {
+  const slides = detail.status === "COMPLETED" && detail.document ? detail.document.slides : [];
   setDetail(detail);
-  setSlides(extracted);
-  setSelectedNumber((current) => extracted.some((slide) => slide.number === current) ? current : extracted[0]?.number ?? 1);
+  setSlides(slides);
+  setSelectedNumber((current) => (slides.some((slide) => slide.number === current) ? current : (slides[0]?.number ?? 1)));
 }
 
 async function responseMessage(response: Response, fallback: string): Promise<string> {

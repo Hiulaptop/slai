@@ -44,6 +44,13 @@ export class AnimationRegistry {
     return definition;
   }
 
+  // Registry metadata for UI (e.g. the design editor's animation picker) -
+  // callers list available keys instead of hardcoding them, so a new
+  // registered animation appears automatically.
+  listKeys(version: number): string[] {
+    return Array.from(this.requireVersion(version).keys());
+  }
+
   validateOptions(version: number, key: string, options: unknown): unknown {
     const definition = this.require(version, key);
     const result = definition.optionsSchema.safeParse(options);

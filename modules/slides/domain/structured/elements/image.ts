@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import type { ElementDefinition, RenderNode } from "../element-registry";
 
-const ALLOWED_IMAGE_SRC = /^data:image\/(png|jpeg|webp);base64,[a-z0-9+/=]+$/i;
+export const ALLOWED_IMAGE_SRC = /^data:image\/(png|jpeg|webp);base64,[a-z0-9+/=]+$/i;
 
 export const imagePropsSchema = z
   .object({
