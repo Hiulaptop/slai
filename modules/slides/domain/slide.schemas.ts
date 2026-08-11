@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { wireSlideSchema } from "./structured/compose";
+
 export const outlineSlideSchema = z
   .object({
     number: z.number().int().min(1),
@@ -76,21 +78,6 @@ export const batchEditSchema = z
 
 export type BatchEdit = z.infer<typeof batchEditSchema>;
 
-export const editResponseSchema = z
-  .object({
-    slides: z
-      .array(
-        z
-          .object({
-            slideNumber: z.number().int().min(1),
-            html: z.string().min(1),
-          })
-          .strict(),
-      )
-      .min(1),
-  })
-  .strict();
-
 export const generationIdSchema = z.uuid();
 
 export const slideUndoSchema = z.object({ slideNumber: z.number().int().positive() }).strict();
@@ -132,7 +119,7 @@ export type DesignBootstrapInput = z.infer<typeof designBootstrapSchema>;
 export const designSaveSchema = z
   .object({
     generationId: z.uuid(),
-    html: z.string().trim().min(1),
+    slides: z.array(wireSlideSchema).min(1).max(50),
     expectedRevision: z.number().int().min(1).nullable(),
   })
   .strict();

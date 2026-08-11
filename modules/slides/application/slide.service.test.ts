@@ -1,20 +1,62 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { CURRENT_ANIMATION_REGISTRY_VERSION } from "../domain/structured/animation-registry";
+import type { StructuredRevision } from "../domain/structured/types";
 import type { AIGenerator, SlideRepository, StoredPresentation } from "./slide.ports";
 import { SlideService } from "./slide.service";
 
 const outline = { title: "Deck", slides: [{ number: 1, title: "One", summary: "First" }, { number: 2, title: "Two", summary: "Second" }] };
-const html = '<!doctype html><html><head><style>.slai-slide{color:#123456}</style></head><body><div class="slai-slide" data-slide-number="1">One</div><div class="slai-slide" data-slide-number="2">Two</div></body></html>';
-const stored: StoredPresentation = { id: "123e4567-e89b-12d3-a456-426614174000", userId: "user-1", status: "COMPLETED", approvedOutline: outline, htmlContent: html, currentRevisionNumber: 1, nextRevisionNumber: 2, provider: "openai", modelId: "model", finishReason: "stop", promptTokens: 1, completionTokens: 2, totalTokens: 3, title: "Deck", createdAt: new Date("2026-08-02T00:00:00Z"), updatedAt: new Date("2026-08-02T00:01:00Z"), completedAt: new Date("2026-08-02T00:01:00Z") };
+const stored: StoredPresentation = { id: "123e4567-e89b-12d3-a456-426614174000", userId: "user-1", status: "COMPLETED", approvedOutline: outline, htmlContent: null, currentRevisionNumber: 1, nextRevisionNumber: 2, provider: "openai", modelId: "model", finishReason: "stop", promptTokens: 1, completionTokens: 2, totalTokens: 3, title: "Deck", createdAt: new Date("2026-08-02T00:00:00Z"), updatedAt: new Date("2026-08-02T00:01:00Z"), completedAt: new Date("2026-08-02T00:01:00Z") };
 const creation = { title: "Deck", prompt: "Explain results", slideCount: 2, dataFiles: [new File(["x"], "r.txt", { type: "text/plain" })], templateFiles: [new File(["x"], "t.html", { type: "text/html" })] };
 
-function repository(): SlideRepository { return { createGeneration: vi.fn().mockResolvedValue({ ...stored, status: "PROCESSING" }), failGeneration: vi.fn(), completeGeneration: vi.fn().mockResolvedValue(stored), findOwned: vi.fn().mockResolvedValue(stored), listOwned: vi.fn().mockResolvedValue([]), deleteOwned: vi.fn().mockResolvedValue(true), appendEdit: vi.fn().mockImplementation(async ({ html: next }) => ({ ...stored, htmlContent: next, currentRevisionNumber: 2 })), saveDesign: vi.fn().mockImplementation(async ({ html: next }) => ({ ...stored, htmlContent: next, currentRevisionNumber: 2 })), undo: vi.fn().mockResolvedValue({ ...stored, currentRevisionNumber: 2, nextRevisionNumber: 3 }), undoableSlideNumbers: vi.fn().mockResolvedValue([1]) }; }
+const structuredRevision: StructuredRevision = {
+  animationRegistryVersion: CURRENT_ANIMATION_REGISTRY_VERSION,
+  slides: [
+    { number: 1, width: 960, height: 540, props: {}, elements: [] },
+    { number: 2, width: 960, height: 540, props: {}, elements: [] },
+  ],
+};
+
+function textElement(text: string, overrides: Partial<{ x: number; y: number; width: number; height: number; zIndex: number }> = {}) {
+  return {
+    type: "text",
+    geometry: { x: overrides.x ?? 0, y: overrides.y ?? 0, width: overrides.width ?? 400, height: overrides.height ?? 80, zIndex: overrides.zIndex ?? 0 },
+    props: { text, styleType: "body", fontSize: 18, fontWeight: 400, color: "#171713", backgroundColor: null, align: "left", bold: false, italic: false, underline: false, list: "none" },
+    animation: null,
+  };
+}
+function wireSlide(number: number, elements = [textElement(`Slide ${number}`)]) {
+  return { number, width: 960, height: 540, elements };
+}
+
+function repository(): SlideRepository {
+  return {
+    createGeneration: vi.fn().mockResolvedValue({ ...stored, status: "PROCESSING" }),
+    failGeneration: vi.fn(),
+    completeGeneration: vi.fn(),
+    findOwned: vi.fn().mockResolvedValue(stored),
+    listOwned: vi.fn().mockResolvedValue([]),
+    deleteOwned: vi.fn().mockResolvedValue(true),
+    appendEdit: vi.fn(),
+    saveDesign: vi.fn(),
+    undo: vi.fn(),
+    undoableSlideNumbers: vi.fn().mockResolvedValue([]),
+    loadCurrentStructuredRevision: vi.fn().mockResolvedValue(structuredRevision),
+    completeStructuredGeneration: vi.fn().mockResolvedValue(stored),
+    saveStructuredDesign: vi.fn().mockResolvedValue({ ...stored, currentRevisionNumber: 2 }),
+    appendStructuredEdit: vi.fn().mockResolvedValue({ ...stored, currentRevisionNumber: 2 }),
+    undoStructured: vi.fn().mockResolvedValue({ ...stored, currentRevisionNumber: 2, nextRevisionNumber: 3 }),
+    undoableStructuredSlideNumbers: vi.fn().mockResolvedValue([1]),
+  };
+}
 function ai(): AIGenerator { return { generate: vi.fn() }; }
+function aiResponse(text: string) { return { text, model: "model", finishReason: "stop", usage: { promptTokens: 1, completionTokens: 2, totalTokens: 3 } }; }
 
 describe("SlideService", () => {
   let repo: SlideRepository; let generator: AIGenerator; let service: SlideService;
   beforeEach(() => { repo = repository(); generator = ai(); service = new SlideService(repo, generator, "openai", "model"); });
+
   it("suggests and validates an outline in JSON mode", async () => {
-    vi.mocked(generator.generate).mockResolvedValue({ text: JSON.stringify(outline), model: "model", finishReason: "stop", usage: { promptTokens: 1, completionTokens: 2, totalTokens: 3 } });
+    vi.mocked(generator.generate).mockResolvedValue(aiResponse(JSON.stringify(outline)));
     await expect(service.suggestOutline(creation)).resolves.toEqual(outline);
     const request = vi.mocked(generator.generate).mock.calls[0][0];
     expect(request).toMatchObject({ responseFormat: "json_object" });
@@ -22,16 +64,29 @@ describe("SlideService", () => {
     expect(content).toEqual(expect.arrayContaining([expect.objectContaining({ filename: "r.txt" })]));
     expect(content).not.toEqual(expect.arrayContaining([expect.objectContaining({ filename: "t.html" })]));
   });
-  it("marks generation failed when model HTML is invalid", async () => {
+
+  it("marks generation failed when the model returns invalid JSON", async () => {
     vi.mocked(generator.generate).mockResolvedValue({ text: "bad", model: "model", finishReason: null, usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } });
     await expect(service.generate("user-1", { ...creation, outline })).rejects.toMatchObject({ code: "INVALID_MODEL_OUTPUT" });
     expect(repo.failGeneration).toHaveBeenCalled();
-    expect(repo.completeGeneration).not.toHaveBeenCalled();
+    expect(repo.completeStructuredGeneration).not.toHaveBeenCalled();
   });
-  it("completes a valid generation with revision-ready HTML", async () => {
-    vi.mocked(generator.generate).mockResolvedValue({ text: html, model: "model", finishReason: "stop", usage: { promptTokens: 1, completionTokens: 2, totalTokens: 3 } });
-    await expect(service.generate("user-1", { ...creation, outline })).resolves.toEqual(stored);
-    expect(repo.completeGeneration).toHaveBeenCalledWith(stored.id, expect.stringContaining("slai-slide"), expect.objectContaining({ model: "model" }));
+
+  it("rejects generation when the model returns the wrong slide count", async () => {
+    vi.mocked(generator.generate).mockResolvedValue(aiResponse(JSON.stringify({ slides: [wireSlide(1)] })));
+    await expect(service.generate("user-1", { ...creation, outline })).rejects.toMatchObject({ code: "INVALID_MODEL_OUTPUT" });
+    expect(repo.completeStructuredGeneration).not.toHaveBeenCalled();
+  });
+
+  it("completes a valid generation with a structured document", async () => {
+    vi.mocked(generator.generate).mockResolvedValue(aiResponse(JSON.stringify({ slides: [wireSlide(1), wireSlide(2)] })));
+    await expect(service.generate("user-1", { ...creation, outline })).resolves.toEqual({ generation: stored, structuredRevision, undoableSlideNumbers: [1] });
+    expect(repo.completeStructuredGeneration).toHaveBeenCalledWith(
+      stored.id,
+      expect.objectContaining({ slides: expect.arrayContaining([expect.objectContaining({ number: 1 }), expect.objectContaining({ number: 2 })]) }),
+      CURRENT_ANIMATION_REGISTRY_VERSION,
+      expect.objectContaining({ model: "model" }),
+    );
     const content = vi.mocked(generator.generate).mock.calls[0][0].messages[1].content;
     expect(content).toEqual(expect.arrayContaining([
       expect.objectContaining({ text: expect.stringContaining("AUTHORITATIVE DATA FILES") }),
@@ -40,22 +95,34 @@ describe("SlideService", () => {
       expect.objectContaining({ filename: "t.html" }),
     ]));
   });
+
   it("applies multiple replacements in one repository edit", async () => {
-    vi.mocked(generator.generate).mockResolvedValue({ text: JSON.stringify({ slides: [{ slideNumber: 1, html: '<div class="slai-slide" data-slide-number="1">A</div>' }, { slideNumber: 2, html: '<div class="slai-slide" data-slide-number="2">B</div>' }] }), model: "model", finishReason: "stop", usage: { promptTokens: 1, completionTokens: 2, totalTokens: 3 } });
+    vi.mocked(generator.generate).mockResolvedValue(aiResponse(JSON.stringify({ slides: [wireSlide(1, [textElement("A")]), wireSlide(2, [textElement("B")])] })));
     await service.edit("user-1", { generationId: stored.id, edits: [{ slideNumber: 1, prompt: "A" }, { slideNumber: 2, prompt: "B" }] });
-    expect(repo.appendEdit).toHaveBeenCalledOnce();
-    expect(vi.mocked(repo.appendEdit).mock.calls[0][0].html).toContain(">A</div>");
+    expect(repo.appendStructuredEdit).toHaveBeenCalledOnce();
+    const call = vi.mocked(repo.appendStructuredEdit).mock.calls[0][0];
+    expect(call.replacements.slides.map((slide) => slide.number).sort()).toEqual([1, 2]);
+    expect(call.replacements.nodes.some((node) => (node.props as { text: string }).text === "A")).toBe(true);
   });
+
   it("rejects incomplete replacement sets without persisting", async () => {
-    vi.mocked(generator.generate).mockResolvedValue({ text: JSON.stringify({ slides: [{ slideNumber: 1, html: '<div class="slai-slide" data-slide-number="1">A</div>' }] }), model: "model", finishReason: null, usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } });
+    vi.mocked(generator.generate).mockResolvedValue(aiResponse(JSON.stringify({ slides: [wireSlide(1)] })));
     await expect(service.edit("user-1", { generationId: stored.id, edits: [{ slideNumber: 1, prompt: "A" }, { slideNumber: 2, prompt: "B" }] })).rejects.toMatchObject({ code: "INVALID_MODEL_OUTPUT" });
-    expect(repo.appendEdit).not.toHaveBeenCalled();
+    expect(repo.appendStructuredEdit).not.toHaveBeenCalled();
   });
+
+  it("refuses to edit a presentation that has no structured revision yet, without calling the AI provider", async () => {
+    vi.mocked(repo.loadCurrentStructuredRevision).mockResolvedValueOnce(null);
+    await expect(service.edit("user-1", { generationId: stored.id, edits: [{ slideNumber: 1, prompt: "A" }] })).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(generator.generate).not.toHaveBeenCalled();
+  });
+
   it("supports undo and reports conflicts", async () => {
     await expect(service.undo("user-1", stored.id, 1)).resolves.toMatchObject({ generation: { currentRevisionNumber: 2 }, undoableSlideNumbers: [1] });
-    vi.mocked(repo.undo).mockResolvedValueOnce(null);
+    vi.mocked(repo.undoStructured).mockResolvedValueOnce(null);
     await expect(service.undo("user-1", stored.id, 1)).rejects.toMatchObject({ code: "CONFLICT" });
   });
+
   it("conceals presentations not owned by the user", async () => {
     vi.mocked(repo.findOwned).mockResolvedValueOnce(null);
     await expect(service.undo("other-user", stored.id, 1)).rejects.toMatchObject({ code: "NOT_FOUND" });
@@ -73,10 +140,15 @@ describe("SlideService", () => {
     expect(repo.listOwned).toHaveBeenCalledWith({ userId: "user-1", limit: 1 });
   });
 
-  it("returns owner detail for incomplete lifecycle states", async () => {
-    const failed = { ...stored, status: "FAILED" as const, htmlContent: null };
+  it("returns owner detail with the structured revision and undoable slide numbers", async () => {
+    await expect(service.detail("user-1", stored.id)).resolves.toEqual({ generation: stored, structuredRevision, undoableSlideNumbers: [1] });
+  });
+
+  it("returns owner detail for incomplete lifecycle states without loading structured content", async () => {
+    const failed = { ...stored, status: "FAILED" as const };
     vi.mocked(repo.findOwned).mockResolvedValueOnce(failed);
-    await expect(service.detail("user-1", stored.id)).resolves.toEqual({ generation: failed, undoableSlideNumbers: [] });
+    await expect(service.detail("user-1", stored.id)).resolves.toEqual({ generation: failed, structuredRevision: null, undoableSlideNumbers: [] });
+    expect(repo.loadCurrentStructuredRevision).not.toHaveBeenCalled();
   });
 
   it("deletes through the policy and reports stale deletes", async () => {
@@ -96,15 +168,16 @@ describe("SlideService", () => {
       modelId: "blank",
       approvedOutline: expect.objectContaining({ slides: expect.arrayContaining([expect.objectContaining({ number: 1 })]) }),
     }));
-    const html = vi.mocked(repo.completeGeneration).mock.calls[0][1];
-    expect(html.match(/data-slide-number="/g)).toHaveLength(3);
-    expect(html).toContain('data-slide-number="3"');
+    const document = vi.mocked(repo.completeStructuredGeneration).mock.calls[0][1];
+    expect(document.slides).toHaveLength(3);
+    expect(document.slides.every((slide) => slide.topLevelElementIds.length === 0)).toBe(true);
+    expect(document.slides.map((slide) => slide.number)).toEqual([1, 2, 3]);
   });
 
   it("defaults blank bootstrap to a single slide", async () => {
     await service.bootstrapDesign("user-1", { title: "Solo slide", mode: "blank" });
-    const html = vi.mocked(repo.completeGeneration).mock.calls[0][1];
-    expect(html.match(/data-slide-number="/g)).toHaveLength(1);
+    const document = vi.mocked(repo.completeStructuredGeneration).mock.calls[0][1];
+    expect(document.slides).toHaveLength(1);
   });
 
   it("rejects template bootstrap since no template library exists yet", async () => {
@@ -113,21 +186,23 @@ describe("SlideService", () => {
     expect(repo.createGeneration).not.toHaveBeenCalled();
   });
 
-  it("saves a sanitized design and enforces the client's expected revision as CAS input", async () => {
-    const designHtml = '<html><head><style>.slai-slide{color:red}</style></head><body><div class="slai-slide" data-slide-number="1">Hi</div></body></html>';
-    await service.saveDesign("user-1", { generationId: stored.id, html: designHtml, expectedRevision: 1 });
-    expect(repo.saveDesign).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: 1, html: expect.stringContaining("slai-slide") }));
+  it("saves a structured design and enforces the client's expected revision as CAS input", async () => {
+    await service.saveDesign("user-1", { generationId: stored.id, slides: [wireSlide(1)], expectedRevision: 1 });
+    expect(repo.saveStructuredDesign).toHaveBeenCalledWith(expect.objectContaining({
+      expectedRevision: 1,
+      document: expect.objectContaining({ slides: expect.arrayContaining([expect.objectContaining({ number: 1 })]) }),
+    }));
   });
 
-  it("rejects design saves with no slides without persisting", async () => {
-    await expect(service.saveDesign("user-1", { generationId: stored.id, html: "<html><body>no slides</body></html>", expectedRevision: 1 }))
+  it("rejects design saves with element props that fail the registered schema, without persisting", async () => {
+    const invalid = [{ number: 1, width: 960, height: 540, elements: [{ type: "text", geometry: { x: 0, y: 0, width: 100, height: 40, zIndex: 0 }, props: { text: "x" }, animation: null }] }];
+    await expect(service.saveDesign("user-1", { generationId: stored.id, slides: invalid, expectedRevision: 1 }))
       .rejects.toMatchObject({ code: "INVALID_INPUT" });
-    expect(repo.saveDesign).not.toHaveBeenCalled();
+    expect(repo.saveStructuredDesign).not.toHaveBeenCalled();
   });
 
   it("reports a conflict when the design save loses the revision race", async () => {
-    vi.mocked(repo.saveDesign).mockResolvedValueOnce(null);
-    const designHtml = '<html><head><style>.slai-slide{color:red}</style></head><body><div class="slai-slide" data-slide-number="1">Hi</div></body></html>';
-    await expect(service.saveDesign("user-1", { generationId: stored.id, html: designHtml, expectedRevision: 1 })).rejects.toMatchObject({ code: "CONFLICT" });
+    vi.mocked(repo.saveStructuredDesign).mockResolvedValueOnce(null);
+    await expect(service.saveDesign("user-1", { generationId: stored.id, slides: [wireSlide(1)], expectedRevision: 1 })).rejects.toMatchObject({ code: "CONFLICT" });
   });
 });

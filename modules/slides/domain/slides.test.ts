@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { buildBlankPresentationHtml, extractSlides, replaceSlides, slideNumbers, validatePresentationHtml, validateReplacementHtml } from "./html";
 import { parseModelJson } from "./model-output";
 import { editSystemPrompt, generationSystemPrompt, OUTLINE_SYSTEM_PROMPT } from "./prompts";
-import { approvedOutlineSchema, batchEditSchema, creationMetadataSchema, editResponseSchema, outlineSchema } from "./slide.schemas";
+import { approvedOutlineSchema, batchEditSchema, creationMetadataSchema, outlineSchema } from "./slide.schemas";
+import { structuredSlidesResponseSchema } from "./structured/compose";
 import { assertAggregateUpload, normalizedMediaType, toFilePart } from "./uploads";
 
 const html = "<!doctype html><html><head><style>.x{color:red}</style></head><body><div class=\"slai-slide\" data-slide-number=\"1\">One</div><div class=\"slai-slide\" data-slide-number=\"2\">Two</div></body></html>";
@@ -20,21 +21,22 @@ describe("slide domain", () => {
     expect(approvedOutlineSchema(52).safeParse({ title: "Deck", slides }).success).toBe(false);
   });
   it("parses fenced JSON and validates its schema", () => {
-    expect(parseModelJson("```json\n{\"slides\":[{\"slideNumber\":1,\"html\":\"x\"}]}\n```", editResponseSchema).slides[0].slideNumber).toBe(1);
+    const json = '```json\n{"slides":[{"number":1,"width":960,"height":540,"elements":[]}]}\n```';
+    expect(parseModelJson(json, structuredSlidesResponseSchema).slides[0].number).toBe(1);
     expect(() => parseModelJson("not json", outlineSchema)).toThrowError(expect.objectContaining({ code: "INVALID_MODEL_OUTPUT" }));
   });
   it("defines explicit prompt contracts", () => {
     expect(OUTLINE_SYSTEM_PROMPT).toContain("Return JSON only");
     expect(OUTLINE_SYSTEM_PROMPT).not.toContain("1-50");
-    expect(generationSystemPrompt("{}")).toContain("class=\"slai-slide\"");
+    expect(generationSystemPrompt("{}")).toContain("\"type\":\"text|shape|table\"");
     expect(generationSystemPrompt("{}")).toContain("every PDF page as a rendered image");
     expect(generationSystemPrompt("{}")).toContain("Never invent, estimate, extrapolate");
     expect(generationSystemPrompt("{}")).toContain("never factual sources");
-    expect(generationSystemPrompt("{}")).toContain("HTML and CSS only");
-    expect(generationSystemPrompt("{}")).toContain("height:100%");
-    expect(generationSystemPrompt("{}")).toContain("no child may render outside");
-    expect(editSystemPrompt("{}")).toContain("exactly one replacement");
-    expect(editSystemPrompt("{}")).toContain("no scrollbars or visual overflow");
+    expect(generationSystemPrompt("{}")).toContain("Return JSON only");
+    expect(generationSystemPrompt("{}")).toContain("960 wide by 540 tall");
+    expect(generationSystemPrompt("{}")).toContain("Never use type \"image\"");
+    expect(editSystemPrompt("{}")).toContain("exactly one full replacement slide");
+    expect(editSystemPrompt("{}")).toContain("960 wide by 540 tall");
   });
   it("validates uploads and converts them to base64", async () => {
     await expect(toFilePart(new File(["report"], "report.txt", { type: "text/plain" }), "report")).resolves.toMatchObject({ source: { data: "cmVwb3J0" } });

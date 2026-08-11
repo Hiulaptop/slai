@@ -3,7 +3,8 @@ export type SlideErrorCode =
   | "NOT_FOUND"
   | "CONFLICT"
   | "PROVIDER_ERROR"
-  | "INVALID_MODEL_OUTPUT";
+  | "INVALID_MODEL_OUTPUT"
+  | "RENDER_FAILED";
 
 export class SlideError extends Error {
   constructor(

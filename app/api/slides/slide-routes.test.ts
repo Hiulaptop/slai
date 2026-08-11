@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthError } from "@/modules/auth/domain/auth.errors";
 import { SlideError } from "@/modules/slides/domain/slide.errors";
 
-const mocks = vi.hoisted(() => ({ authenticate: vi.fn(), suggestOutline: vi.fn(), generate: vi.fn(), edit: vi.fn(), undo: vi.fn(), list: vi.fn(), detail: vi.fn(), delete: vi.fn(), bootstrapDesign: vi.fn(), saveDesign: vi.fn() }));
+const mocks = vi.hoisted(() => ({ authenticate: vi.fn(), suggestOutline: vi.fn(), generate: vi.fn(), edit: vi.fn(), undo: vi.fn(), list: vi.fn(), detail: vi.fn(), delete: vi.fn(), bootstrapDesign: vi.fn(), saveDesign: vi.fn(), render: vi.fn() }));
 vi.mock("server-only", () => ({}));
 vi.mock("@/modules/auth/infrastructure/auth", () => ({ authService: { authenticate: mocks.authenticate } }));
 vi.mock("@/modules/slides/infrastructure/slides", () => ({ slideService: mocks }));
@@ -10,6 +10,8 @@ import { PATCH as edit } from "./edit/route";
 import { POST as generate } from "./generate/route";
 import { POST as outline } from "./outline/route";
 import { POST as undo } from "./[generationId]/undo/route";
+import { GET as renderPresentation } from "./[generationId]/render/route";
+import { GET as downloadPresentation } from "./[generationId]/download/route";
 import { DELETE as deletePresentation, GET as detail } from "./[generationId]/route";
 import { GET as list } from "./route";
 import { POST as bootstrapDesign } from "./design/bootstrap/route";
@@ -17,10 +19,21 @@ import { PATCH as saveDesign } from "./design/save/route";
 
 const id = "123e4567-e89b-12d3-a456-426614174000";
 const user = { id: "user-1", email: "u@test.com", status: "ACTIVE", lastLoginAt: null, createdAt: new Date(), updatedAt: new Date() };
-const presentation = { id, userId: "user-1", status: "COMPLETED", approvedOutline: { title: "Deck", slides: [{ number: 1, title: "One", summary: "S" }] }, htmlContent: "<html></html>", currentRevisionNumber: 1, nextRevisionNumber: 2, provider: "openai", modelId: "model", finishReason: null, promptTokens: 1, completionTokens: 2, totalTokens: 3, title: "Deck", createdAt: new Date("2026-08-02T00:00:00Z"), updatedAt: new Date("2026-08-02T00:01:00Z"), completedAt: new Date("2026-08-02T00:01:00Z") };
+const presentation = { id, userId: "user-1", status: "COMPLETED", approvedOutline: { title: "Deck", slides: [{ number: 1, title: "One", summary: "S" }] }, htmlContent: null, currentRevisionNumber: 1, nextRevisionNumber: 2, provider: "openai", modelId: "model", finishReason: null, promptTokens: 1, completionTokens: 2, totalTokens: 3, title: "Deck", createdAt: new Date("2026-08-02T00:00:00Z"), updatedAt: new Date("2026-08-02T00:01:00Z"), completedAt: new Date("2026-08-02T00:01:00Z") };
+const structuredRevision = {
+  animationRegistryVersion: 1,
+  slides: [{
+    number: 1,
+    width: 960,
+    height: 540,
+    props: {},
+    elements: [{ id: "el-0", type: "text", schemaVersion: 1, geometry: { x: 0, y: 0, width: 400, height: 80, zIndex: 0 }, props: { text: "Hello", styleType: "body", fontSize: 18, fontWeight: 400, color: "#171713", backgroundColor: null, align: "left", bold: false, italic: false, underline: false, list: "none" }, animation: null, children: [] }],
+  }],
+};
+const presentationDetail = { generation: presentation, structuredRevision, undoableSlideNumbers: [1] };
 
 describe("slide routes", () => {
-  beforeEach(() => { vi.clearAllMocks(); mocks.authenticate.mockResolvedValue(user); mocks.suggestOutline.mockResolvedValue(presentation.approvedOutline); mocks.generate.mockResolvedValue(presentation); mocks.edit.mockResolvedValue(presentation); mocks.undo.mockResolvedValue({ generation: presentation, undoableSlideNumbers: [1] }); mocks.list.mockResolvedValue({ items: [presentation], nextCursor: null }); mocks.detail.mockResolvedValue({ generation: presentation, undoableSlideNumbers: [1] }); mocks.delete.mockResolvedValue(undefined); mocks.bootstrapDesign.mockResolvedValue(presentation); mocks.saveDesign.mockResolvedValue(presentation); });
+  beforeEach(() => { vi.clearAllMocks(); mocks.authenticate.mockResolvedValue(user); mocks.suggestOutline.mockResolvedValue(presentation.approvedOutline); mocks.generate.mockResolvedValue(presentationDetail); mocks.edit.mockResolvedValue(presentationDetail); mocks.undo.mockResolvedValue(presentationDetail); mocks.list.mockResolvedValue({ items: [presentation], nextCursor: null }); mocks.detail.mockResolvedValue(presentationDetail); mocks.delete.mockResolvedValue(undefined); mocks.bootstrapDesign.mockResolvedValue(presentationDetail); mocks.saveDesign.mockResolvedValue(presentationDetail); mocks.render.mockResolvedValue(structuredRevision); });
   it("authenticates before parsing outline uploads", async () => {
     mocks.authenticate.mockRejectedValueOnce(new AuthError("UNAUTHORIZED", "Unauthorized"));
     const response = await outline(new Request("http://localhost/api/slides/outline", { method: "POST", body: "bad" }));
@@ -96,9 +109,10 @@ describe("slide routes", () => {
     const body = await response.json();
     expect(response.status).toBe(200);
     expect(mocks.detail).toHaveBeenCalledWith("user-1", id);
-    expect(body).toMatchObject({ id, title: "Deck", html: "<html></html>" });
+    expect(body).toMatchObject({ id, title: "Deck" });
+    expect(body.document).toMatchObject({ animationRegistryVersion: 1 });
     expect(body.undoableSlideNumbers).toEqual([1]);
-    expect(JSON.stringify(body)).not.toMatch(/userId|nextRevisionNumber|requestPayload/);
+    expect(JSON.stringify(body)).not.toMatch(/userId|nextRevisionNumber|requestPayload|htmlContent/);
   });
 
   it("deletes an owned presentation with no response body", async () => {
@@ -139,16 +153,66 @@ describe("slide routes", () => {
   });
 
   it("saves a design with its expected revision", async () => {
-    const request = new Request("http://localhost/api/slides/design/save", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ generationId: id, html: "<html><body><div class=\"slai-slide\" data-slide-number=\"1\"></div></body></html>", expectedRevision: 1 }) });
+    const slides = [{ number: 1, width: 960, height: 540, elements: [] }];
+    const request = new Request("http://localhost/api/slides/design/save", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ generationId: id, slides, expectedRevision: 1 }) });
     const response = await saveDesign(request);
     expect(response.status).toBe(200);
-    expect(mocks.saveDesign).toHaveBeenCalledWith("user-1", { generationId: id, html: expect.stringContaining("slai-slide"), expectedRevision: 1 });
+    expect(mocks.saveDesign).toHaveBeenCalledWith("user-1", { generationId: id, slides, expectedRevision: 1 });
   });
 
   it("maps a stale design-save revision to a 409 conflict", async () => {
     mocks.saveDesign.mockRejectedValueOnce(new SlideError("CONFLICT", "Presentation changed concurrently"));
-    const request = new Request("http://localhost/api/slides/design/save", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ generationId: id, html: "<html><body><div class=\"slai-slide\" data-slide-number=\"1\"></div></body></html>", expectedRevision: 1 }) });
+    const slides = [{ number: 1, width: 960, height: 540, elements: [] }];
+    const request = new Request("http://localhost/api/slides/design/save", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ generationId: id, slides, expectedRevision: 1 }) });
     expect((await saveDesign(request)).status).toBe(409);
+  });
+
+  it("renders a completed presentation as safe inline HTML", async () => {
+    const response = await renderPresentation(new Request(`http://localhost/api/slides/${id}/render`), { params: Promise.resolve({ generationId: id }) });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/html");
+    expect(response.headers.get("content-disposition")).toBeNull();
+    const body = await response.text();
+    expect(body).toContain("<!doctype html>");
+    expect(body).toContain("Hello");
+    expect(mocks.render).toHaveBeenCalledWith("user-1", id);
+  });
+
+  it("downloads a completed presentation as a standalone attachment", async () => {
+    const response = await downloadPresentation(new Request(`http://localhost/api/slides/${id}/download`), { params: Promise.resolve({ generationId: id }) });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/html");
+    expect(response.headers.get("content-disposition")).toContain("attachment");
+    expect(response.headers.get("content-disposition")).toContain(id);
+  });
+
+  it("requires authentication before rendering or downloading", async () => {
+    mocks.authenticate.mockRejectedValueOnce(new AuthError("UNAUTHORIZED", "Unauthorized"));
+    expect((await renderPresentation(new Request(`http://localhost/api/slides/${id}/render`), { params: Promise.resolve({ generationId: id }) })).status).toBe(401);
+    expect(mocks.render).not.toHaveBeenCalled();
+  });
+
+  it("conceals a missing or non-owned presentation behind the same 404 on render", async () => {
+    mocks.render.mockRejectedValueOnce(new SlideError("NOT_FOUND", "Presentation not found"));
+    const response = await renderPresentation(new Request(`http://localhost/api/slides/${id}/render`), { params: Promise.resolve({ generationId: id }) });
+    expect(response.status).toBe(404);
+  });
+
+  it("maps an incomplete presentation to a 409 conflict on render", async () => {
+    mocks.render.mockRejectedValueOnce(new SlideError("CONFLICT", "Presentation is not ready to render"));
+    const response = await renderPresentation(new Request(`http://localhost/api/slides/${id}/render`), { params: Promise.resolve({ generationId: id }) });
+    expect(response.status).toBe(409);
+  });
+
+  it("maps a renderer failure (e.g. a malformed stored graph) to a safe 500 without leaking internals", async () => {
+    mocks.render.mockResolvedValueOnce({
+      animationRegistryVersion: 1,
+      slides: [{ number: 1, width: 960, height: 540, props: {}, elements: [{ id: "el-0", type: "unregistered-type", schemaVersion: 1, geometry: { x: 0, y: 0, width: 10, height: 10, zIndex: 0 }, props: {}, animation: null, children: [] }] }],
+    });
+    const response = await downloadPresentation(new Request(`http://localhost/api/slides/${id}/download`), { params: Promise.resolve({ generationId: id }) });
+    expect(response.status).toBe(500);
+    const body = await response.json();
+    expect(body.error.message).toBe("Unable to render structured revision");
   });
 });
 

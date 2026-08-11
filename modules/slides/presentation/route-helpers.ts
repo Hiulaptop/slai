@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 
 import { AuthError } from "../../auth/domain/auth.errors";
-import type { PresentationPage, PresentationSummary, StoredPresentation } from "../application/slide.ports";
+import type { PresentationDetail } from "../application/slide.service";
+import type { PresentationPage, PresentationSummary } from "../application/slide.ports";
 import { SlideError } from "../domain/slide.errors";
 
 export async function readJson(request: Request): Promise<unknown> {
@@ -40,16 +41,16 @@ export function requireText(form: FormData, name: string): string {
   return value;
 }
 
-export function presentationResponse(input: StoredPresentation | { generation: StoredPresentation; undoableSlideNumbers: number[] }) {
-  const generation = "generation" in input ? input.generation : input;
+export function presentationResponse(detail: PresentationDetail) {
+  const { generation, structuredRevision, undoableSlideNumbers } = detail;
   return {
     id: generation.id,
     title: generation.title,
     status: generation.status,
     outline: generation.approvedOutline,
-    html: generation.htmlContent,
+    document: structuredRevision,
     revisionNumber: generation.currentRevisionNumber,
-    undoableSlideNumbers: "generation" in input ? input.undoableSlideNumbers : [],
+    undoableSlideNumbers,
     createdAt: generation.createdAt,
     updatedAt: generation.updatedAt,
     completedAt: generation.completedAt,
@@ -88,7 +89,7 @@ export function slideErrorResponse(error: unknown): NextResponse {
   if (error instanceof SlideError && error.code === "INVALID_INPUT") return jsonError("INVALID_INPUT", error.message, 400);
   if (error instanceof AuthError) return jsonError("UNAUTHORIZED", "Unauthorized", 401);
   if (error instanceof SlideError) {
-    const status = error.code === "NOT_FOUND" ? 404 : error.code === "CONFLICT" ? 409 : 502;
+    const status = error.code === "NOT_FOUND" ? 404 : error.code === "CONFLICT" ? 409 : error.code === "RENDER_FAILED" ? 500 : 502;
     return jsonError(error.code, error.message, status);
   }
   return jsonError("INTERNAL_ERROR", "Internal server error", 500);

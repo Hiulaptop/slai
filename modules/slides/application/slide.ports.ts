@@ -2,6 +2,8 @@ import type { AIRequest } from "../../ai/domain/request.schema";
 import type { AdapterRequestOptions, AIResponse } from "../../ai/infrastructure/cliproxy/adapter.types";
 import type { BatchEdit, CreationMetadata, SlideOutline } from "../domain/slide.schemas";
 import type { PresentationCursor } from "../domain/slide.schemas";
+import type { FlattenedDocument } from "../domain/structured/compose";
+import type { StructuredRevision } from "../domain/structured/types";
 
 export interface AIGenerator {
   generate(request: AIRequest, options?: AdapterRequestOptions): Promise<AIResponse>;
@@ -63,4 +65,14 @@ export interface SlideRepository {
   saveDesign(input: { generation: StoredPresentation; html: string; expectedRevision: number | null }): Promise<StoredPresentation | null>;
   undo(generation: StoredPresentation, slideNumber: number): Promise<StoredPresentation | null>;
   undoableSlideNumbers(generation: StoredPresentation): Promise<number[]>;
+
+  // Structured revision operations - source of truth for every new
+  // presentation (see design.md); the methods above remain only for
+  // generations created before this change.
+  loadCurrentStructuredRevision(generation: StoredPresentation): Promise<StructuredRevision | null>;
+  completeStructuredGeneration(id: string, document: FlattenedDocument, animationRegistryVersion: number, response: AIResponse): Promise<StoredPresentation>;
+  saveStructuredDesign(input: { generation: StoredPresentation; document: FlattenedDocument; animationRegistryVersion: number; expectedRevision: number | null }): Promise<StoredPresentation | null>;
+  appendStructuredEdit(input: { generation: StoredPresentation; replacements: FlattenedDocument; animationRegistryVersion: number; editRequest: unknown }): Promise<StoredPresentation | null>;
+  undoStructured(generation: StoredPresentation, slideNumber: number): Promise<StoredPresentation | null>;
+  undoableStructuredSlideNumbers(generation: StoredPresentation): Promise<number[]>;
 }

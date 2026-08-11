@@ -5,37 +5,28 @@ import { describe, expect, it } from "vitest";
 import {
   clampToSlide,
   createBlankDocument,
+  createImageElement,
+  createShapeElement,
+  createTableElement,
+  createTextElement,
   isAllowedImageSrc,
-  parseDesignSlides,
   renumberSlides,
-  serializeDesignDocument,
+  resizeTable,
+  setTableCellContent,
   SLIDE_HEIGHT,
   SLIDE_WIDTH,
-  type DesignSlide,
-  type SlideElement,
+  tableCellAt,
+  tableCellContent,
+  toWireSlides,
+  type SlideDocument,
 } from "./design-document";
-
-function element(overrides: Partial<SlideElement> & { type: SlideElement["type"] }): SlideElement {
-  const base = { id: "el-1", x: 10, y: 20, width: 100, height: 40, zIndex: 0 };
-  switch (overrides.type) {
-    case "text":
-      return { ...base, text: "Hello", fontSize: 24, color: "#171713", align: "left", ...overrides };
-    case "rectangle":
-      return { ...base, fill: "#2448d8", stroke: "#171713", ...overrides };
-    case "ellipse":
-      return { ...base, fill: "#2448d8", stroke: "#171713", ...overrides };
-    case "line":
-      return { ...base, stroke: "#171713", ...overrides };
-    case "image":
-      return { ...base, src: "data:image/png;base64,AAAA", alt: "logo", ...overrides };
-  }
-}
 
 describe("createBlankDocument", () => {
   it("creates the requested number of contiguous empty slides", () => {
     const slides = createBlankDocument(3);
     expect(slides.map((slide) => slide.number)).toEqual([1, 2, 3]);
     expect(slides.every((slide) => slide.elements.length === 0)).toBe(true);
+    expect(slides.every((slide) => slide.width === SLIDE_WIDTH && slide.height === SLIDE_HEIGHT)).toBe(true);
   });
 
   it("clamps slide count to at least 1 and at most 50", () => {
@@ -47,9 +38,9 @@ describe("createBlankDocument", () => {
 
 describe("renumberSlides", () => {
   it("reassigns contiguous one-based numbers regardless of input order/gaps", () => {
-    const slides: DesignSlide[] = [
-      { number: 5, elements: [] },
-      { number: 1, elements: [] },
+    const slides: SlideDocument[] = [
+      { number: 5, width: SLIDE_WIDTH, height: SLIDE_HEIGHT, props: {}, elements: [] },
+      { number: 1, width: SLIDE_WIDTH, height: SLIDE_HEIGHT, props: {}, elements: [] },
     ];
     expect(renumberSlides(slides).map((slide) => slide.number)).toEqual([1, 2]);
   });
@@ -91,68 +82,90 @@ describe("isAllowedImageSrc", () => {
   });
 });
 
-describe("serializeDesignDocument + parseDesignSlides round-trip", () => {
-  it("round-trips every element type through serialize -> parse", () => {
-    const slides: DesignSlide[] = [
-      {
-        number: 1,
-        elements: [
-          element({ type: "text", id: "t1", x: 5, y: 5, width: 200, height: 60, text: "Title <b>&</b>", align: "center", fontSize: 32 }),
-          element({ type: "rectangle", id: "r1", zIndex: 1 }),
-          element({ type: "ellipse", id: "e1", zIndex: 2 }),
-          element({ type: "line", id: "l1", zIndex: 3 }),
-          element({ type: "image", id: "i1", zIndex: 4 }),
-        ],
-      },
+describe("element creation helpers", () => {
+  it("creates a text element with registry defaults and clamped geometry", () => {
+    const element = createTextElement(-50, -50, 0);
+    expect(element.type).toBe("text");
+    expect(element.geometry.x).toBe(0);
+    expect(element.geometry.y).toBe(0);
+    expect((element.props as { text: string }).text).toBe("Text");
+  });
+
+  it("creates each shape variant with the requested shapeType", () => {
+    expect((createShapeElement("rectangle", 0, 0, 0).props as { shapeType: string }).shapeType).toBe("rectangle");
+    expect((createShapeElement("ellipse", 0, 0, 0).props as { shapeType: string }).shapeType).toBe("ellipse");
+    expect((createShapeElement("line", 0, 0, 0).props as { shapeType: string }).shapeType).toBe("line");
+  });
+
+  it("creates an image element with the given src/alt", () => {
+    const element = createImageElement("data:image/png;base64,AAAA", "logo", 0, 0, 0);
+    expect(element.props).toMatchObject({ src: "data:image/png;base64,AAAA", alt: "logo" });
+  });
+});
+
+describe("table helpers", () => {
+  it("creates a table pre-populated with one blank cell per grid slot", () => {
+    const table = createTableElement(2, 3, 0, 0, 0);
+    expect(table.props).toMatchObject({ rows: 2, columns: 3 });
+    expect(table.children).toHaveLength(6);
+    expect(tableCellAt(table, 0, 0)?.type).toBe("table-cell");
+    expect(tableCellAt(table, 1, 2)?.type).toBe("table-cell");
+  });
+
+  it("resizes a table, preserving existing cell content by slot and dropping cells outside the new bounds", () => {
+    const table = createTableElement(2, 2, 0, 0, 0);
+    const withContent = setTableCellContent(table, 0, 0, createTextElement(0, 0, 0));
+    const grown = resizeTable(withContent, 3, 3);
+    expect(grown.children).toHaveLength(9);
+    expect(tableCellContent(grown, 0, 0)).not.toBeNull();
+
+    const shrunk = resizeTable(grown, 1, 1);
+    expect(shrunk.children).toHaveLength(1);
+    expect(tableCellContent(shrunk, 0, 0)).not.toBeNull();
+  });
+
+  it("sets and clears a cell's single content child", () => {
+    const table = createTableElement(1, 1, 0, 0, 0);
+    const text = createTextElement(0, 0, 0);
+    const withText = setTableCellContent(table, 0, 0, text);
+    expect(tableCellContent(withText, 0, 0)?.id).toBe(text.id);
+
+    const cleared = setTableCellContent(withText, 0, 0, null);
+    expect(tableCellContent(cleared, 0, 0)).toBeNull();
+  });
+});
+
+describe("toWireSlides", () => {
+  it("converts the local scene graph into the flat wire shape the API expects", () => {
+    const table = setTableCellContent(createTableElement(1, 1, 10, 20, 0), 0, 0, createTextElement(0, 0, 0));
+    const slide: SlideDocument = { number: 5, width: SLIDE_WIDTH, height: SLIDE_HEIGHT, props: { backgroundColor: "#ffffff" }, elements: [table] };
+
+    const [wire] = toWireSlides([slide]);
+    expect(wire.number).toBe(1);
+    expect(wire.backgroundColor).toBe("#ffffff");
+    expect(wire.elements).toHaveLength(1);
+    expect(wire.elements[0].type).toBe("table");
+    expect(wire.elements[0].geometry).toMatchObject({ x: 10, y: 20 });
+    expect(wire.elements[0].children).toHaveLength(1);
+    expect(wire.elements[0].children![0].slotKey).toBe("r0c0");
+    expect(wire.elements[0].children![0].element.children![0].element.type).toBe("text");
+    // nested content has no canvas geometry of its own
+    expect(wire.elements[0].children![0].element.children![0].element.geometry).toBeNull();
+  });
+
+  it("omits geometry for nested content and renumbers slides", () => {
+    const slides: SlideDocument[] = [
+      { number: 4, width: SLIDE_WIDTH, height: SLIDE_HEIGHT, props: {}, elements: [] },
+      { number: 7, width: SLIDE_WIDTH, height: SLIDE_HEIGHT, props: {}, elements: [] },
     ];
-
-    const html = serializeDesignDocument("My Deck", slides);
-    const parsed = parseDesignSlides(html);
-
-    expect(parsed).toHaveLength(1);
-    expect(parsed[0].number).toBe(1);
-    expect(parsed[0].elements).toHaveLength(5);
-
-    const byId = Object.fromEntries(parsed[0].elements.map((el) => [el.id, el]));
-    expect(byId.t1).toMatchObject({ type: "text", text: "Title <b>&</b>", align: "center", fontSize: 32, x: 5, y: 5, width: 200, height: 60 });
-    expect(byId.r1).toMatchObject({ type: "rectangle", fill: "#2448d8", stroke: "#171713" });
-    expect(byId.e1).toMatchObject({ type: "ellipse" });
-    expect(byId.l1).toMatchObject({ type: "line", stroke: "#171713" });
-    expect(byId.i1).toMatchObject({ type: "image", src: "data:image/png;base64,AAAA", alt: "logo" });
+    const wire = toWireSlides(slides);
+    expect(wire.map((slide) => slide.number)).toEqual([1, 2]);
   });
 
-  it("drops image elements whose src is not an allowed data: URL", () => {
-    const html = serializeDesignDocument("Deck", [
-      { number: 1, elements: [element({ type: "image", src: "https://evil.example/x.png" })] },
-    ]);
-    // Simulate an untrusted/hand-edited document referencing a remote image.
-    const tampered = html.replace("data:image/png;base64,AAAA", "https://evil.example/x.png");
-    expect(parseDesignSlides(tampered)[0].elements).toHaveLength(0);
-  });
-
-  it("ignores non-design elements (scripts, forms, unknown nodes) inside a slide wrapper", () => {
-    const html =
-      '<!doctype html><html><body><div class="slai-slide" data-slide-number="1">' +
-      '<script>alert(1)</script><form></form><span>plain text</span>' +
-      "</div></body></html>";
-    expect(parseDesignSlides(html)[0].elements).toHaveLength(0);
-  });
-
-  it("throws on non-contiguous slide numbering", () => {
-    const html =
-      '<!doctype html><html><body>' +
-      '<div class="slai-slide" data-slide-number="1"></div>' +
-      '<div class="slai-slide" data-slide-number="3"></div>' +
-      "</body></html>";
-    expect(() => parseDesignSlides(html)).toThrow("invalid slide numbering");
-  });
-
-  it("renumbers slides on serialize even if input numbering has gaps", () => {
-    const slides: DesignSlide[] = [
-      { number: 4, elements: [] },
-      { number: 7, elements: [] },
-    ];
-    const parsed = parseDesignSlides(serializeDesignDocument("Deck", slides));
-    expect(parsed.map((slide) => slide.number)).toEqual([1, 2]);
+  it("maps an element's animation reference into the flat duration/delay wire shape", () => {
+    const element = { ...createTextElement(0, 0, 0), animation: { key: "fade", props: { durationMs: 300, delayMs: 50 } } };
+    const slide: SlideDocument = { number: 1, width: SLIDE_WIDTH, height: SLIDE_HEIGHT, props: {}, elements: [element] };
+    const [wire] = toWireSlides([slide]);
+    expect(wire.elements[0].animation).toEqual({ key: "fade", durationMs: 300, delayMs: 50 });
   });
 });

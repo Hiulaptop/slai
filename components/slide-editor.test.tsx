@@ -4,7 +4,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { PresentationDetail } from "@/lib/types";
+import type { ElementNode, PresentationDetail } from "@/lib/types";
 import { SlideEditor } from "./slide-editor";
 
 const mocks = vi.hoisted(() => ({ authFetch: vi.fn() }));
@@ -13,7 +13,17 @@ vi.mock("@/lib/auth/auth-context", () => ({
   useAuth: () => ({ authFetch: mocks.authFetch }),
 }));
 
-const html = `<!doctype html><html><head><style>body.presentation .deck .slai-slide{color:rgb(12,34,56)}</style><script>window.bad=true</script></head><body class="presentation"><main class="deck"><div class="slai-slide" data-slide-number="1"><h1>Provider secret one</h1></div><div class="slai-slide" data-slide-number="2"><h1>Provider secret two</h1></div></main></body></html>`;
+function textElement(id: string, text: string): ElementNode {
+  return {
+    id,
+    type: "text",
+    schemaVersion: 1,
+    geometry: { x: 0, y: 0, width: 400, height: 80, zIndex: 0 },
+    props: { text, styleType: "body", fontSize: 18, fontWeight: 400, color: "#171713", backgroundColor: null, align: "left", bold: false, italic: false, underline: false, list: "none" },
+    animation: null,
+    children: [],
+  };
+}
 
 const detail: PresentationDetail = {
   id: "generation-1",
@@ -23,7 +33,13 @@ const detail: PresentationDetail = {
     { number: 1, title: "Opening", summary: "Start" },
     { number: 2, title: "Results", summary: "Finish" },
   ] },
-  html,
+  document: {
+    animationRegistryVersion: 1,
+    slides: [
+      { number: 1, width: 960, height: 540, props: {}, elements: [textElement("t1", "Provider secret one")] },
+      { number: 2, width: 960, height: 540, props: {}, elements: [textElement("t2", "Provider secret two")] },
+    ],
+  },
   revisionNumber: 2,
   undoableSlideNumbers: [1],
   createdAt: "2026-08-01T00:00:00.000Z",
@@ -39,25 +55,23 @@ beforeEach(() => {
 });
 
 describe("SlideEditor", () => {
-  it("downloads the current presentation HTML with a safe filename", async () => {
+  it("downloads the server-rendered presentation HTML with a safe filename", async () => {
     const user = userEvent.setup();
     const createObjectURL = vi.fn().mockReturnValue("blob:presentation");
     const revokeObjectURL = vi.fn();
     const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
     vi.stubGlobal("URL", { ...URL, createObjectURL, revokeObjectURL });
     render(<SlideEditor generationId="generation-1" />);
+    await screen.findByTitle("Slide 1 preview");
 
-    await user.click(await screen.findByRole("button", { name: "Download HTML" }));
+    mocks.authFetch.mockResolvedValueOnce(new Response("<!doctype html><html><body>rendered deck</body></html>", { headers: { "content-type": "text/html" } }));
+    await user.click(screen.getByRole("button", { name: "Download HTML" }));
 
+    await waitFor(() => expect(click).toHaveBeenCalledOnce());
+    expect(mocks.authFetch.mock.calls.at(-1)?.[0]).toBe("/api/slides/generation-1/download");
     const blob = createObjectURL.mock.calls[0][0] as Blob;
     expect(blob.type).toBe("text/html;charset=utf-8");
-    await expect(blob.text()).resolves.toContain('data-slide-number="1"');
-    await expect(blob.text()).resolves.toContain('data-slide-number="2"');
-    await expect(blob.text()).resolves.toContain('aria-label="Previous slide"');
-    await expect(blob.text()).resolves.toContain('aria-label="Next slide"');
-    await expect(blob.text()).resolves.toContain("event.key === 'ArrowLeft'");
-    await expect(blob.text()).resolves.toContain("event.key === 'ArrowRight'");
-    expect(click).toHaveBeenCalledOnce();
+    await expect(blob.text()).resolves.toContain("rendered deck");
     const anchor = click.mock.instances[0] as HTMLAnchorElement;
     expect(anchor.download).toBe("Quarterly-review.html");
     expect(anchor.href).toBe("blob:presentation");
@@ -66,7 +80,7 @@ describe("SlideEditor", () => {
     vi.unstubAllGlobals();
   });
 
-  it("renders only the selected wrapper in a script-disabled iframe", async () => {
+  it("renders only the selected slide's content in a script-disabled iframe", async () => {
     render(<SlideEditor generationId="generation-1" />);
 
     const frame = await screen.findByTitle("Slide 1 preview");
@@ -74,15 +88,7 @@ describe("SlideEditor", () => {
     expect(frame).not.toHaveAttribute("allow");
     expect(frame.getAttribute("srcdoc")).toContain("Provider secret one");
     expect(frame.getAttribute("srcdoc")).not.toContain("Provider secret two");
-    expect(frame.getAttribute("srcdoc")).toContain('<body class="presentation">');
-    expect(frame.getAttribute("srcdoc")).toContain('<main class="deck">');
-    expect(frame.getAttribute("srcdoc")).toContain("body.presentation .deck .slai-slide{color:rgb(12,34,56)}");
-    const rendered = new DOMParser().parseFromString(frame.getAttribute("srcdoc")!, "text/html");
-    expect(rendered.querySelector("body.presentation .deck .slai-slide[data-slide-number='1']")).not.toBeNull();
-    expect(frame.getAttribute("srcdoc")).not.toContain("<script");
-    expect(frame.getAttribute("srcdoc")).toContain('data-slai-viewport="true"');
-    expect(frame.getAttribute("srcdoc")).toContain("height:100%!important");
-    expect(frame.getAttribute("srcdoc")).toContain("overflow:hidden!important");
+    expect(frame.getAttribute("srcdoc")).toContain("<!doctype html>");
     expect(screen.queryByText("Provider secret one")).not.toBeInTheDocument();
   });
 
@@ -193,7 +199,7 @@ describe("SlideEditor", () => {
     ["PROCESSING", "Presentation is still being generated"],
     ["FAILED", "Generation failed"],
   ] as const)("shows the %s lifecycle state without an iframe", async (status, heading) => {
-    mocks.authFetch.mockResolvedValue(Response.json({ ...detail, status, html: null, revisionNumber: null }));
+    mocks.authFetch.mockResolvedValue(Response.json({ ...detail, status, document: null, revisionNumber: null }));
     render(<SlideEditor generationId="generation-1" />);
     expect(await screen.findByRole("heading", { name: heading })).toBeVisible();
     expect(screen.queryByTitle(/preview/)).not.toBeInTheDocument();

@@ -93,10 +93,12 @@ model SlideGeneration {
   createdAt             DateTime              @default(now())
   updatedAt             DateTime              @updatedAt
 
-  user           User?           @relation(fields: [userId], references: [id], onDelete: SetNull)
+  user           User?              @relation(fields: [userId], references: [id], onDelete: SetNull)
   apiRequestLogs ApiRequestLog[]
   systemLogs     SystemLog[]
   revisions      SlideRevision[]
+  elementNodes   SlideElementNode[]
+  snapshots      SlideSnapshot[]
 
   @@index([userId, createdAt])
   @@index([userId, createdAt, id])
@@ -106,21 +108,129 @@ model SlideGeneration {
 }
 
 model SlideRevision {
-  id                   String                 @id @default(uuid()) @db.Char(36)
-  slideGenerationId    String                 @db.Char(36)
-  revisionNumber       Int
-  parentRevisionNumber Int?
-  operation            SlideRevisionOperation
-  editRequest          Json?
-  changedSlideNumbers  Json?
-  htmlContent          String                 @db.LongText
-  createdAt            DateTime               @default(now())
+  id                       String                 @id @default(uuid()) @db.Char(36)
+  slideGenerationId        String                 @db.Char(36)
+  revisionNumber           Int
+  parentRevisionNumber     Int?
+  operation                SlideRevisionOperation
+  editRequest              Json?
+  changedSlideNumbers      Json?
+  htmlContent              String?                @db.LongText
+  animationRegistryVersion Int?
+  createdAt                DateTime               @default(now())
 
-  slideGeneration SlideGeneration @relation(fields: [slideGenerationId], references: [id], onDelete: Cascade)
+  slideGeneration SlideGeneration      @relation(fields: [slideGenerationId], references: [id], onDelete: Cascade)
+  slides          SlideRevisionSlide[]
 
   @@unique([slideGenerationId, revisionNumber])
   @@index([slideGenerationId, parentRevisionNumber])
   @@map("slide_revisions")
+}
+
+// --- Structured slide document persistence (add-structured-slide-persistence) ---
+//
+// Additive, non-destructive: `SlideGeneration.htmlContent` and
+// `SlideRevision.htmlContent` are retained (the latter is now nullable,
+// since a structured-only revision writes no HTML) until the migration in
+// design.md's "Migration Plan" reaches its destructive final step. Nothing
+// here removes or repurposes an existing column.
+//
+// Structural sharing is content-addressed rather than reference-passed: a
+// caller submits a self-contained flat node/edge graph per mutated slide,
+// and the repository looks up `(slideGenerationId, contentHash)` before
+// inserting - identical content already persisted for this generation is
+// reused by ID instead of duplicated, which is what makes "reuse unchanged
+// slides/elements across revisions" (design.md's structural-sharing
+// requirement) work without the caller ever referencing old row IDs.
+// Sharing is deliberately scoped per generation (not global) so a single
+// cascade delete on `SlideGeneration` correctly removes every row this
+// generation owns with no reference-counting or GC - see design.md's
+// "Garbage collection... is deferred" and "rely on cascade deletion for
+// projects first".
+
+model SlideElementNode {
+  id                String   @id @default(uuid()) @db.Char(36)
+  slideGenerationId String   @db.Char(36)
+  contentHash       String   @db.Char(64)
+  type              String   @db.VarChar(100)
+  schemaVersion     Int
+  x                 Float?
+  y                 Float?
+  width             Float?
+  height            Float?
+  zIndex            Int?
+  props             Json
+  animationKey      String?  @db.VarChar(100)
+  animationProps    Json?
+  createdAt         DateTime @default(now())
+
+  slideGeneration SlideGeneration        @relation(fields: [slideGenerationId], references: [id], onDelete: Cascade)
+  childEdges      SlideElementChild[]    @relation("ElementParent")
+  parentEdges     SlideElementChild[]    @relation("ElementChild")
+  snapshotSlots   SlideSnapshotElement[]
+
+  @@unique([slideGenerationId, contentHash])
+  @@index([slideGenerationId, type])
+  @@map("slide_element_nodes")
+}
+
+model SlideElementChild {
+  parentElementNodeId String @db.Char(36)
+  childElementNodeId  String @db.Char(36)
+  slotKey             String @db.VarChar(100)
+  orderIndex          Int
+
+  parent SlideElementNode @relation("ElementParent", fields: [parentElementNodeId], references: [id], onDelete: Cascade)
+  child  SlideElementNode @relation("ElementChild", fields: [childElementNodeId], references: [id], onDelete: Cascade)
+
+  @@id([parentElementNodeId, slotKey])
+  @@unique([parentElementNodeId, orderIndex])
+  @@index([childElementNodeId])
+  @@map("slide_element_children")
+}
+
+model SlideSnapshot {
+  id                String   @id @default(uuid()) @db.Char(36)
+  slideGenerationId String   @db.Char(36)
+  contentHash       String   @db.Char(64)
+  width             Float
+  height            Float
+  props             Json
+  createdAt         DateTime @default(now())
+
+  slideGeneration SlideGeneration        @relation(fields: [slideGenerationId], references: [id], onDelete: Cascade)
+  elements        SlideSnapshotElement[]
+  revisionSlides  SlideRevisionSlide[]
+
+  @@unique([slideGenerationId, contentHash])
+  @@index([slideGenerationId])
+  @@map("slide_snapshots")
+}
+
+model SlideSnapshotElement {
+  slideSnapshotId String @db.Char(36)
+  orderIndex      Int
+  elementNodeId   String @db.Char(36)
+
+  snapshot SlideSnapshot    @relation(fields: [slideSnapshotId], references: [id], onDelete: Cascade)
+  element  SlideElementNode @relation(fields: [elementNodeId], references: [id], onDelete: Cascade)
+
+  @@id([slideSnapshotId, orderIndex])
+  @@index([elementNodeId])
+  @@map("slide_snapshot_elements")
+}
+
+model SlideRevisionSlide {
+  slideRevisionId String @db.Char(36)
+  slideNumber     Int
+  slideSnapshotId String @db.Char(36)
+
+  revision SlideRevision @relation(fields: [slideRevisionId], references: [id], onDelete: Cascade)
+  snapshot SlideSnapshot @relation(fields: [slideSnapshotId], references: [id], onDelete: Cascade)
+
+  @@id([slideRevisionId, slideNumber])
+  @@index([slideSnapshotId])
+  @@map("slide_revision_slides")
 }
 
 model ApiRequestLog {
