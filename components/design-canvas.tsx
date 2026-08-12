@@ -259,12 +259,33 @@ function CanvasElement({
   }
 
   const rendered = elementRegistry.render(CURRENT_ANIMATION_REGISTRY_VERSION, element);
-  const style = { ...styleObjectFrom(rendered.style), ...position };
+  const style: Record<string, string | number> = { ...styleObjectFrom(rendered.style), ...position };
+
+  // Live-preview CSS custom properties for text font-size/color (see
+  // design-editor.tsx's TextProperties): the properties panel writes
+  // directly to these two custom properties on this DOM node (found via
+  // `data-slai-element-id` below) during a slider/color-picker gesture,
+  // bypassing React/`slides` state entirely so a drag does not push an undo
+  // history entry or trigger a full re-render on every tick - only once on
+  // release. The actual font-size/color styles reference the custom
+  // properties, so this works identically whether they were just set
+  // imperatively mid-drag or came from a normal re-render after a committed
+  // change. This never generates a Tailwind class or invokes the compiler
+  // (modules/slides/infrastructure/structured/tailwind-compiler.ts) - that
+  // only ever runs from the render/download route handlers.
+  if (isTextElement(element)) {
+    style["--slai-font-size"] = `${element.props.fontSize}px`;
+    style["--slai-text-color"] = element.props.color;
+    style.fontSize = "var(--slai-font-size)";
+    style.color = "var(--slai-text-color)";
+  }
+
   const props: Record<string, unknown> = {
     style,
     className: "cursor-move",
     onPointerDown,
     onDoubleClick: isTextElement(element) ? onStartEdit : undefined,
+    "data-slai-element-id": element.id,
     ...attrsToProps(rendered.attrs),
   };
   const children = rendered.children?.map((child, index) => renderNodeToJsx(child, index));

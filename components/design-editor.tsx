@@ -463,7 +463,9 @@ function ElementProperties({
     <section aria-label="Element properties" className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4">
       <h2 className="font-mono text-xs font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">Properties</h2>
       <div className="mt-3 space-y-4">
-        {isTextElement(element) ? <TextProperties props={element.props} onChange={(patch) => onChange((el) => ({ ...el, props: { ...(el.props as TextProps), ...patch } }))} /> : null}
+        {isTextElement(element) ? (
+          <TextProperties elementId={element.id} props={element.props} onChange={(patch) => onChange((el) => ({ ...el, props: { ...(el.props as TextProps), ...patch } }))} />
+        ) : null}
         {isShapeElement(element) ? <ShapeProperties props={element.props} onChange={(patch) => onChange((el) => ({ ...el, props: { ...(el.props as ShapeProps), ...patch } }))} /> : null}
         {isTableElement(element) ? (
           <TableProperties
@@ -492,7 +494,42 @@ function ToggleButton({ active, label, onClick }: { active: boolean; label: stri
   );
 }
 
-function TextProperties({ props, onChange }: { props: TextProps; onChange(patch: Partial<TextProps>): void }) {
+// Live-editing pattern for continuous controls (font-size slider, color
+// picker): every input tick writes straight to the selected element's DOM
+// node (via the `data-slai-element-id` attribute design-canvas.tsx sets on
+// it) rather than calling `onChange`/`applyMutation` per tick, so a drag
+// never pushes an undo-history entry or triggers a state re-render until
+// the gesture ends - matching DesignCanvas's existing draftElements/
+// onCommitElements pattern for position/size dragging. This is a plain CSS
+// custom-property write; it never resolves or generates a Tailwind class,
+// so it can never reach the compiler in
+// modules/slides/infrastructure/structured/tailwind-compiler.ts, which only
+// runs from the render/download route handlers.
+function writeLiveStyleVar(elementId: string, variable: string, value: string) {
+  const node = document.querySelector<HTMLElement>(`[data-slai-element-id="${CSS.escape(elementId)}"]`);
+  node?.style.setProperty(variable, value);
+}
+
+function TextProperties({ elementId, props, onChange }: { elementId: string; props: TextProps; onChange(patch: Partial<TextProps>): void }) {
+  // Resync the drag-local draft from committed props (e.g. undo/redo, or
+  // selecting a different element) without an effect - adjusting state
+  // during render is the pattern React recommends for this, and avoids the
+  // set-state-in-effect lint rule that a `useEffect([props.fontSize])` would
+  // trip (see https://react.dev/learn/you-might-not-need-an-effect).
+  const [draftFontSize, setDraftFontSize] = useState(props.fontSize);
+  const [lastCommittedFontSize, setLastCommittedFontSize] = useState(props.fontSize);
+  if (props.fontSize !== lastCommittedFontSize) {
+    setLastCommittedFontSize(props.fontSize);
+    setDraftFontSize(props.fontSize);
+  }
+
+  const [draftColor, setDraftColor] = useState(props.color);
+  const [lastCommittedColor, setLastCommittedColor] = useState(props.color);
+  if (props.color !== lastCommittedColor) {
+    setLastCommittedColor(props.color);
+    setDraftColor(props.color);
+  }
+
   return (
     <div className="space-y-3">
       <label className="block text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
@@ -513,6 +550,24 @@ function TextProperties({ props, onChange }: { props: TextProps; onChange(patch:
           ))}
         </select>
       </label>
+      <label className="block text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
+        Font size ({draftFontSize}px)
+        <input
+          className="mt-1 w-full"
+          max={400}
+          min={1}
+          onBlur={() => onChange({ fontSize: draftFontSize })}
+          onChange={(event) => {
+            const value = Number(event.target.value);
+            setDraftFontSize(value);
+            writeLiveStyleVar(elementId, "--slai-font-size", `${value}px`);
+          }}
+          onKeyUp={() => onChange({ fontSize: draftFontSize })}
+          onPointerUp={() => onChange({ fontSize: draftFontSize })}
+          type="range"
+          value={draftFontSize}
+        />
+      </label>
       <div className="flex flex-wrap gap-1.5">
         <ToggleButton active={props.bold} label="Bold" onClick={() => onChange({ bold: !props.bold })} />
         <ToggleButton active={props.italic} label="Italic" onClick={() => onChange({ italic: !props.italic })} />
@@ -526,7 +581,17 @@ function TextProperties({ props, onChange }: { props: TextProps; onChange(patch:
       </div>
       <label className="block text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
         Text color
-        <input className="mt-1 h-9 w-full rounded-lg border border-[var(--line)]" onChange={(event) => onChange({ color: event.target.value })} type="color" value={props.color} />
+        <input
+          className="mt-1 h-9 w-full rounded-lg border border-[var(--line)]"
+          onBlur={() => onChange({ color: draftColor })}
+          onChange={(event) => {
+            const value = event.target.value;
+            setDraftColor(value);
+            writeLiveStyleVar(elementId, "--slai-text-color", value);
+          }}
+          type="color"
+          value={draftColor}
+        />
       </label>
       <label className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
         <input checked={props.backgroundColor !== null} onChange={(event) => onChange({ backgroundColor: event.target.checked ? "#ffffff" : null })} type="checkbox" />

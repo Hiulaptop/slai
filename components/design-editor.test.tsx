@@ -186,6 +186,51 @@ describe("DesignEditor", () => {
     expect(await screen.findByRole("heading", { name: "Not available in the visual editor yet" })).toBeVisible();
   });
 
+  it("updates the canvas live preview via CSS custom property while dragging the font-size slider, without committing or touching the network until release", async () => {
+    const user = userEvent.setup();
+    render(<DesignEditor generationId="design-1" />);
+    await screen.findByLabelText("Slide canvas");
+    await user.click(screen.getByRole("button", { name: "Text" }));
+    await clickCanvas();
+
+    const slider = screen.getByLabelText(/Font size/);
+    const canvasNode = document.querySelector<HTMLElement>("[data-slai-element-id]");
+    expect(canvasNode).not.toBeNull();
+    expect(canvasNode!.style.getPropertyValue("--slai-font-size")).toBe("18px");
+
+    const callsBeforeDrag = mocks.authFetch.mock.calls.length;
+    fireEvent.change(slider, { target: { value: "90" } });
+
+    expect(canvasNode!.style.getPropertyValue("--slai-font-size")).toBe("90px");
+    expect(mocks.authFetch.mock.calls.length).toBe(callsBeforeDrag);
+
+    mocks.authFetch.mockResolvedValueOnce(Response.json({ ...blankDetail, revisionNumber: 2 }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Saved" })).toBeVisible());
+    const [, init] = mocks.authFetch.mock.calls.at(-1)!;
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.slides[0].elements[0].props.fontSize).toBe(18);
+  });
+
+  it("commits the dragged font-size value on release, matching what gets sent to save", async () => {
+    const user = userEvent.setup();
+    render(<DesignEditor generationId="design-1" />);
+    await screen.findByLabelText("Slide canvas");
+    await user.click(screen.getByRole("button", { name: "Text" }));
+    await clickCanvas();
+
+    const slider = screen.getByLabelText(/Font size/);
+    fireEvent.change(slider, { target: { value: "90" } });
+    fireEvent.pointerUp(slider);
+
+    mocks.authFetch.mockResolvedValueOnce(Response.json({ ...blankDetail, revisionNumber: 2 }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Saved" })).toBeVisible());
+    const [, init] = mocks.authFetch.mock.calls.at(-1)!;
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.slides[0].elements[0].props.fontSize).toBe(90);
+  });
+
   it("retries generic load failures", async () => {
     const user = userEvent.setup();
     mocks.authFetch.mockResolvedValueOnce(new Response(null, { status: 500 })).mockResolvedValueOnce(Response.json(blankDetail));
