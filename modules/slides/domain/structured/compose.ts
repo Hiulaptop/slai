@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { SlideError, type SlideErrorCode } from "../slide.errors";
 import { animationRegistry } from "./animation-registry";
+import { resolveTextElementTailwindClasses } from "./tailwind-adapter";
 import type { AnimationReference, ElementChildCommand, ElementNodeCommand, Geometry, SlideCommand } from "./types";
 
 // The wire shape authors (the AI adapter, and later the visual editor) work
@@ -117,13 +118,19 @@ export function flattenWireSlides(slides: WireSlide[], animationRegistryVersion:
   function place(element: WireElement, isTopLevel: boolean): string {
     if (isTopLevel && !element.geometry) fail("Top-level slide elements must include geometry");
     validateAnimation(element);
+    let props: unknown;
+    try {
+      props = resolveTextElementTailwindClasses(element.type, element.props, errorCode);
+    } catch (cause) {
+      fail(cause instanceof Error ? cause.message : "Invalid Tailwind class reference");
+    }
     const id = nextId();
     nodes.push({
       id,
       type: element.type,
       schemaVersion: 1,
       geometry: element.geometry ?? NULL_GEOMETRY,
-      props: element.props,
+      props,
       animation: toAnimationReference(element.animation),
     });
     (element.children ?? []).forEach((child, index) => {

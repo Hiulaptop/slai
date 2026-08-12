@@ -1,0 +1,39 @@
+## 1. Tailwind Whitelist Module
+
+- [x] 1.1 Add `@tailwindcss/cli` as a project dependency.
+- [x] 1.2 Create `modules/slides/domain/structured/tailwind-whitelist.ts`: a named-scale value table for font-size (`text-sm` … `text-9xl`) and Tailwind's default color palette for text color, each entry resolving to a concrete `fontSize` number or hex/color string. Decide (per design.md's Open Question) whether these values are derived from Tailwind's installed default theme or hand-maintained, and document the choice in the module. Font-size: hand-maintained (stable since Tailwind v1). Color: derived programmatically - `scripts/generate-tailwind-color-palette.mjs` reads the installed `tailwindcss` package's own `tailwindcss/colors` export and writes the full default palette (290 entries: every family, every shade, whatever the installed version ships) to a committed generated file (`tailwind-color-palette.generated.ts`), verified against the installed package by a drift test (1.4). No hand-transcribed color values anywhere.
+- [x] 1.3 Add type-hinted arbitrary-value pattern matching to the same module: `text-[length:<value>]` (px/rem/em, bounded to `text.ts`'s existing `fontSize` range) for font-size, `text-[color:<value>]` (hex/rgb/named) for color. Reject a bare (non-type-hinted) arbitrary value even if it would otherwise be unambiguous.
+- [x] 1.4 Add unit tests: every named-scale entry resolves correctly; a valid type-hinted arbitrary value resolves correctly for each of length and color; a bare arbitrary value (no type hint) is rejected; an out-of-range or malformed arbitrary value is rejected; an unrecognized class name is rejected. (`tailwind-whitelist.test.ts`, 9 tests passing) Plus a drift test (`tailwind-color-palette.drift.test.ts`, 3 tests) verifying the committed generated palette still matches the installed `tailwindcss` package (version and every value), and covers every family the installed package exposes.
+
+## 2. Resolution Wiring
+
+- [x] 2.1 Implement `resolveTailwindTextClasses(wireSlides, errorCode)` in `modules/slides/domain/structured/compose.ts` (or an adjacent module it imports): walks every text element (including nested table-cell content, reusing the walk `flattenWireSlides` already performs), resolves a font-size/color class reference against the whitelist, and replaces it with the resolved value on the element's props. Throws with the caller-supplied `errorCode` on any unresolvable reference - no fallback, no partial resolution. Implemented in new `tailwind-adapter.ts`: `resolveTextElementTailwindClasses` (per-element, called inline from `compose.ts`'s existing walk) plus a `resolveTailwindTextClasses` whole-tree wrapper for standalone use/tests.
+- [x] 2.2 Wire this resolution pass into `flattenWireSlides` (or immediately before its call sites), mirroring exactly how `validateAnimation()` is already wired there.
+- [x] 2.3 Add unit tests: a text element with valid font-size/color classes resolves and passes through to `validateStructuredCommand` unchanged in every other respect; an element with an unresolvable class fails with the expected `errorCode` and nothing downstream is invoked; nested table-cell text content resolves the same way as top-level text. (`tailwind-adapter.test.ts`, 8 tests passing)
+
+## 3. AI Prompt Changes
+
+- [x] 3.1 Rewrite `generationSystemPrompt` in `modules/slides/domain/prompts.ts` to enumerate the whitelist's supported class patterns for text font-size/color (generated from the whitelist module, not hand-duplicated in the prompt string) and require the model to author those two fields exclusively as classes.
+- [x] 3.2 Apply the equivalent change to `editSystemPrompt`. Both prompts share the `STRUCTURED_ELEMENT_REFERENCE` constant, so one edit covers both.
+- [x] 3.3 Wire `SlideService.generate()` and `SlideService.edit()` to call the resolution pass (2.1/2.2) on the parsed AI response before `flattenWireSlides`/`validateStructuredCommand`, using `errorCode: "INVALID_MODEL_OUTPUT"` for both. Already satisfied by task 2.2's wiring: both call sites already route through `flattenWireSlides` with the correct `errorCode` (`parseStructuredSlides` in `slide.service.ts`), so resolution is inherited automatically - no additional service-layer code needed.
+- [x] 3.4 Update `modules/slides/application/slide.service.test.ts`: extend text-element fixtures to author font-size/color as Tailwind classes; add cases for a resolvable generation/edit response and for an unresolvable class returning `INVALID_MODEL_OUTPUT` without persisting. Added a dedicated `textElementWithClasses` fixture (the existing shared `textElement` fixture intentionally represents already-resolved editor-authored content and is left as-is) plus 4 new tests; 23/23 passing.
+- [x] 3.5 Add a prompt-contract test asserting `generationSystemPrompt`/`editSystemPrompt` include the whitelist's class patterns and the classes-only instruction. (`slides.test.ts`, added to the existing prompt-contract test file)
+
+## 4. Render/Download Tailwind Output
+
+- [ ] 4.1 Add a Tailwind-class rendering mode for text font-size/color in `modules/slides/domain/structured/render.ts`, additive to (not replacing) the existing inline-style output used by every other prop/element.
+- [ ] 4.2 Add a compile step that invokes `@tailwindcss/cli` against the rendered HTML's classes and produces a stylesheet, embedded inline in the returned standalone document; scope this to the render/download route handlers only, not the general `renderStructuredRevision` entry point every other caller uses.
+- [ ] 4.3 Add tests: rendered/downloaded output for a generation with Tailwind-resolved text contains the expected utility classes and an embedded stylesheet covering them; the general render path used elsewhere is unaffected (still inline styles, no compile step invoked); a malformed stored value still fails closed per the existing "Render malformed stored structure" requirement.
+
+## 5. Editor Live Preview
+
+- [ ] 5.1 Change `CanvasElement`'s text rendering in `components/design-canvas.tsx` to expose font-size (and color, if applicable) through a CSS custom property, with the element's actual `font-size`/`color` style referencing that property.
+- [ ] 5.2 Update the font-size/color drag or slider control to write the CSS custom property directly to the DOM node during the gesture (matching `DesignCanvas`'s existing pointer-move/`draftElements` pattern used for position/size dragging) and commit the resolved value to component state on release.
+- [ ] 5.3 Confirm no Tailwind class generation or compile call is reachable from this path - only from the save/download handlers covered by Section 4.
+- [ ] 5.4 Add/update canvas tests: dragging a font-size control updates the live preview without calling any compile-related mock; the committed value on release matches what gets sent to save.
+
+## 6. Verification
+
+- [ ] 6.1 Confirm the target deployment environment permits spawning the `@tailwindcss/cli` subprocess at request time (design.md's noted risk) before relying on it in production.
+- [ ] 6.2 Run `pnpm lint`, project type checking, `pnpm test`, and `pnpm build`, and resolve all failures.
+- [ ] 6.3 Run `openspec validate add-tailwind-text-styling --strict` and resolve every proposal/spec consistency and scenario-format error.
