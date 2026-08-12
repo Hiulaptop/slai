@@ -132,3 +132,21 @@ export function listWhitelistedClassPatterns(): { fontSize: string[]; color: str
     color: [...summarizeNamedColorPatterns(), "text-[color:<#hex|rgb()|hsl()|css-name>]"],
   };
 }
+
+// Reverse lookups (already-resolved value -> class name), used by render.ts's
+// Tailwind-class output mode to regenerate a valid whitelisted class from a
+// persisted element's concrete fontSize/color - see design.md's "Render
+// output has two modes" decision in openspec/changes/add-tailwind-text-styling/.
+// Prefers a named-scale class when the value exactly matches one (e.g.
+// 18 -> "text-lg"), falling back to a type-hinted arbitrary-value class
+// otherwise, so every resolvable value round-trips to some valid class.
+const FONT_SIZE_CLASS_BY_VALUE = new Map(Object.entries(FONT_SIZE_SCALE).map(([key, value]) => [value, key]));
+const COLOR_CLASS_BY_VALUE = new Map(Object.entries(NAMED_COLOR_SCALE).map(([key, value]) => [value, key]));
+
+export function classNameForFontSize(px: number): string {
+  return FONT_SIZE_CLASS_BY_VALUE.get(px) ?? `text-[length:${px}px]`;
+}
+
+export function classNameForColor(value: string): string {
+  return COLOR_CLASS_BY_VALUE.get(value) ?? `text-[color:${value}]`;
+}
