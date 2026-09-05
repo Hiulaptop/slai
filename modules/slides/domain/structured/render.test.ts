@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { elementRegistry, type TextProps } from "./elements";
-import { renderStructuredRevision } from "./render";
+import { renderStructuredRevision, renderStructuredRevisionWithTailwindClasses } from "./render";
 import type { ElementNode, StructuredRevision } from "./types";
 
 function textDefaults(): TextProps {
@@ -141,5 +141,73 @@ describe("renderStructuredRevision", () => {
     const html = renderStructuredRevision(doc);
     expect(html).not.toContain("javascript:alert");
     expect(html).toContain("background:#ffffff");
+  });
+});
+
+// Additive Tailwind-class output mode (add-tailwind-text-styling) - task 4.3.
+describe("renderStructuredRevisionWithTailwindClasses", () => {
+  it("adds a regenerated Tailwind class alongside the existing inline style, never instead of it", () => {
+    const { html, tailwindClasses } = renderStructuredRevisionWithTailwindClasses(revision([textNode()]));
+    // textDefaults() -> fontSize 18 (exactly the "text-lg" scale step), color "#171713" (not in the named palette).
+    expect(html).toContain('class="text-lg text-[color:#171713]"');
+    expect(html).toContain("font-size:18px"); // inline style is still present
+    expect(html).toContain("color:#171713");
+    expect(tailwindClasses.sort()).toEqual(["text-[color:#171713]", "text-lg"]);
+  });
+
+  it("does not add a class attribute to non-text elements or elements with no font-size/color", () => {
+    const shape: ElementNode = {
+      id: "shape1",
+      type: "shape",
+      schemaVersion: 1,
+      geometry: { x: 0, y: 0, width: 100, height: 100, zIndex: 0 },
+      props: elementRegistry.createDefaults("shape", 1),
+      animation: null,
+      children: [],
+    };
+    const { html, tailwindClasses } = renderStructuredRevisionWithTailwindClasses(revision([shape]));
+    expect(tailwindClasses).toEqual([]);
+    expect(html).not.toContain('class="text-');
+  });
+
+  it("resolves Tailwind classes for nested table-cell text content too", () => {
+    const cellText = textNode({ id: "cellText", geometry: { x: null, y: null, width: null, height: null, zIndex: null }, props: { ...textDefaults(), text: "In a cell" } });
+    const cell: ElementNode = {
+      id: "cell",
+      type: "table-cell",
+      schemaVersion: 1,
+      geometry: { x: null, y: null, width: null, height: null, zIndex: null },
+      props: elementRegistry.createDefaults("table-cell", 1),
+      animation: null,
+      children: [{ slotKey: "content", orderIndex: 0, element: cellText }],
+    };
+    const table: ElementNode = {
+      id: "table",
+      type: "table",
+      schemaVersion: 1,
+      geometry: { x: 0, y: 0, width: 400, height: 200, zIndex: 0 },
+      props: { rows: 1, columns: 1, borderColor: "#000000", borderWidth: 1 },
+      animation: null,
+      children: [{ slotKey: "r0c0", orderIndex: 0, element: cell }],
+    };
+    const { tailwindClasses } = renderStructuredRevisionWithTailwindClasses(revision([table]));
+    expect(tailwindClasses).toContain("text-lg");
+  });
+
+  it("dedupes repeated classes across multiple elements", () => {
+    const { tailwindClasses } = renderStructuredRevisionWithTailwindClasses(revision([textNode({ id: "a" }), textNode({ id: "b" })]));
+    expect(tailwindClasses.filter((className) => className === "text-lg")).toHaveLength(1);
+  });
+
+  it("still fails closed with a stable error for a malformed stored structure", () => {
+    const malformed = textNode({ type: "chart", schemaVersion: 1 });
+    expect(() => renderStructuredRevisionWithTailwindClasses(revision([malformed]))).toThrow(/Unable to render/);
+  });
+
+  it("produces output identical (minus the class attribute) to the plain renderer for the general/other-caller path", () => {
+    const plain = renderStructuredRevision(revision([textNode()]));
+    const { html } = renderStructuredRevisionWithTailwindClasses(revision([textNode()]));
+    expect(plain).not.toContain('class="text-lg');
+    expect(html).toContain('class="text-lg');
   });
 });

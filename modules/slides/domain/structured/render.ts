@@ -5,6 +5,7 @@ import { elementRegistry, type RenderContext, type RenderNode } from "./element-
 // singleton registry above - see graph-validator.ts's identical import for
 // why this can't rely on some other module having imported it first.
 import "./elements";
+import { classNameForColor, classNameForFontSize } from "./tailwind-whitelist";
 import type { ElementNode, Geometry, SlideDocument, StructuredRevision } from "./types";
 
 // Pure string-templating renderer: no DOMParser, no browser globals, so this
@@ -68,11 +69,19 @@ function geometryStyle(geometry: Geometry): Record<string, string> {
 // doc comment), by re-implementing the registry's recursive render() call so
 // this cross-cutting wrapping reaches every level of the tree, not only the
 // top-level elements passed in by the caller.
-function renderElementNode(node: ElementNode, animationRegistryVersion: number, animationClasses: Map<string, string>): RenderNode {
+//
+// `tailwindClasses`, when passed, is the additive Tailwind-class output mode
+// (see design.md's "Render output has two modes" in
+// openspec/changes/add-tailwind-text-styling/): a text element's fontSize/
+// color get a regenerated Tailwind class added to `class`, alongside - never
+// instead of - the inline style every element already gets. `undefined`
+// (the default, used by `renderStructuredRevision`) leaves output identical
+// to before this mode existed.
+function renderElementNode(node: ElementNode, animationRegistryVersion: number, animationClasses: Map<string, string>, tailwindClasses?: Set<string>): RenderNode {
   const definition = elementRegistry.require(node.type, node.schemaVersion);
   const context: RenderContext = {
     animationRegistryVersion,
-    renderChild: (child) => renderElementNode(child, animationRegistryVersion, animationClasses),
+    renderChild: (child) => renderElementNode(child, animationRegistryVersion, animationClasses, tailwindClasses),
   };
   const base = definition.render(context, node as ElementNode & { props: unknown });
 
@@ -88,6 +97,15 @@ function renderElementNode(node: ElementNode, animationRegistryVersion: number, 
     style["animation-delay"] = `${resolved.delayMs}ms`;
   }
 
+  if (tailwindClasses && node.type === "text") {
+    const props = node.props as { fontSize?: unknown; color?: unknown };
+    const nodeClasses: string[] = [];
+    if (typeof props.fontSize === "number") nodeClasses.push(classNameForFontSize(props.fontSize));
+    if (typeof props.color === "string") nodeClasses.push(classNameForColor(props.color));
+    for (const className of nodeClasses) tailwindClasses.add(className);
+    if (nodeClasses.length) attrs.class = attrs.class ? `${attrs.class} ${nodeClasses.join(" ")}` : nodeClasses.join(" ");
+  }
+
   return {
     ...base,
     attrs: Object.keys(attrs).length ? attrs : undefined,
@@ -95,10 +113,10 @@ function renderElementNode(node: ElementNode, animationRegistryVersion: number, 
   };
 }
 
-function renderSlideMarkup(slide: SlideDocument, animationRegistryVersion: number, active: boolean, animationClasses: Map<string, string>): string {
+function renderSlideMarkup(slide: SlideDocument, animationRegistryVersion: number, active: boolean, animationClasses: Map<string, string>, tailwindClasses?: Set<string>): string {
   const background = safeColor(slide.props.backgroundColor, "#ffffff");
   const style = `position:relative;width:${slide.width}px;height:${slide.height}px;background:${background};overflow:hidden;margin:0 auto;flex:none;`;
-  const children = slide.elements.map((element) => serializeRenderNode(renderElementNode(element, animationRegistryVersion, animationClasses))).join("");
+  const children = slide.elements.map((element) => serializeRenderNode(renderElementNode(element, animationRegistryVersion, animationClasses, tailwindClasses))).join("");
   const activeAttr = active ? ' data-slai-active="true"' : "";
   return `<div class="slai-slide" data-slide-number="${slide.number}"${activeAttr} style="${style}">${children}</div>`;
 }
@@ -156,31 +174,60 @@ function buildAnimationClassCss(animationClasses: Map<string, string>): string {
   return rules.join("");
 }
 
+function buildDocument(revision: StructuredRevision, tailwindClasses?: Set<string>): string {
+  if (!revision.slides.length) throw new SlideError("RENDER_FAILED", "Structured revision has no slides");
+  const animationClasses = new Map<string, string>();
+  const slidesHtml = revision.slides
+    .map((slide, index) => renderSlideMarkup(slide, revision.animationRegistryVersion, index === 0, animationClasses, tailwindClasses))
+    .join("");
+  const keyframesCss = Array.from(animationClasses.values()).join("");
+  const animationClassCss = buildAnimationClassCss(animationClasses);
+  const style = `${DOCUMENT_CSS}${NAV_CSS}${keyframesCss}${animationClassCss}`;
+  return (
+    `<!doctype html><html><head><meta charset="utf-8">` +
+    `<meta name="viewport" content="width=device-width, initial-scale=1"><title>Presentation</title>` +
+    `<style>${style}</style></head><body><div class="slai-deck">${slidesHtml}</div>` +
+    `<nav class="slai-export-nav" aria-label="Slide navigation">` +
+    `<button type="button" data-slai-export-previous aria-label="Previous slide">Previous</button>` +
+    `<span class="slai-export-counter" data-slai-export-counter aria-live="polite"></span>` +
+    `<button type="button" data-slai-export-next aria-label="Next slide">Next</button></nav>` +
+    `<script>${NAV_SCRIPT}</script></body></html>`
+  );
+}
+
 // Produces one complete, dependency-free standalone HTML document (used for
 // both authenticated preview and attachment download - see design.md's
 // "Should structured detail and rendered preview share one endpoint"). Never
 // writes the result anywhere; the caller decides whether to return it inline
-// or as an attachment.
+// or as an attachment. Every element's fontSize/color-bearing style stays
+// plain inline CSS - no Tailwind classes, no compile step - unaffected by
+// the Tailwind-class output mode below; see that mode's own doc comment for
+// why the two are kept separate.
 export function renderStructuredRevision(revision: StructuredRevision): string {
   try {
-    if (!revision.slides.length) throw new SlideError("RENDER_FAILED", "Structured revision has no slides");
-    const animationClasses = new Map<string, string>();
-    const slidesHtml = revision.slides
-      .map((slide, index) => renderSlideMarkup(slide, revision.animationRegistryVersion, index === 0, animationClasses))
-      .join("");
-    const keyframesCss = Array.from(animationClasses.values()).join("");
-    const animationClassCss = buildAnimationClassCss(animationClasses);
-    const style = `${DOCUMENT_CSS}${NAV_CSS}${keyframesCss}${animationClassCss}`;
-    return (
-      `<!doctype html><html><head><meta charset="utf-8">` +
-      `<meta name="viewport" content="width=device-width, initial-scale=1"><title>Presentation</title>` +
-      `<style>${style}</style></head><body><div class="slai-deck">${slidesHtml}</div>` +
-      `<nav class="slai-export-nav" aria-label="Slide navigation">` +
-      `<button type="button" data-slai-export-previous aria-label="Previous slide">Previous</button>` +
-      `<span class="slai-export-counter" data-slai-export-counter aria-live="polite"></span>` +
-      `<button type="button" data-slai-export-next aria-label="Next slide">Next</button></nav>` +
-      `<script>${NAV_SCRIPT}</script></body></html>`
-    );
+    return buildDocument(revision);
+  } catch (error) {
+    throw new SlideError("RENDER_FAILED", "Unable to render structured revision", { cause: error });
+  }
+}
+
+// Additive Tailwind-class output mode (see design.md's "Render output has
+// two modes" in openspec/changes/add-tailwind-text-styling/): identical
+// output to `renderStructuredRevision` except every text element's
+// fontSize/color also gets a regenerated whitelisted Tailwind class in
+// `class`, alongside its existing inline style. Returns the deduped list of
+// classes actually used so a caller can compile a real stylesheet for them
+// (see modules/slides/infrastructure/structured/tailwind-compiler.ts) -
+// this function itself never invokes Tailwind or does any I/O, staying a
+// pure, synchronous, testable string transform like the rest of this file.
+// Scoped to the render/download route handlers only (see those routes) -
+// every other caller (e.g. the design editor's own live preview) keeps
+// using the plain `renderStructuredRevision` above.
+export function renderStructuredRevisionWithTailwindClasses(revision: StructuredRevision): { html: string; tailwindClasses: string[] } {
+  try {
+    const tailwindClasses = new Set<string>();
+    const html = buildDocument(revision, tailwindClasses);
+    return { html, tailwindClasses: Array.from(tailwindClasses) };
   } catch (error) {
     throw new SlideError("RENDER_FAILED", "Unable to render structured revision", { cause: error });
   }

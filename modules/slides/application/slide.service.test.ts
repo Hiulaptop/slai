@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CURRENT_ANIMATION_REGISTRY_VERSION } from "../domain/structured/animation-registry";
+import { TAILWIND_DEFAULT_TEXT_COLORS } from "../domain/structured/tailwind-color-palette.generated";
 import type { StructuredRevision } from "../domain/structured/types";
 import type { AIGenerator, SlideRepository, StoredPresentation } from "./slide.ports";
 import { SlideService } from "./slide.service";
@@ -26,6 +27,19 @@ function textElement(text: string, overrides: Partial<{ x: number; y: number; wi
 }
 function wireSlide(number: number, elements = [textElement(`Slide ${number}`)]) {
   return { number, width: 960, height: 540, elements };
+}
+
+// Simulates an AI response authoring fontSize/color as Tailwind classes
+// (see add-tailwind-text-styling) rather than already-resolved values -
+// `textElement()` above represents editor-authored (already-resolved)
+// content, which the resolution pass leaves untouched.
+function textElementWithClasses(text: string, fontSizeClass: string, colorClass: string) {
+  return {
+    type: "text",
+    geometry: { x: 0, y: 0, width: 400, height: 80, zIndex: 0 },
+    props: { text, styleType: "body", fontSize: fontSizeClass, fontWeight: 400, color: colorClass, backgroundColor: null, align: "left", bold: false, italic: false, underline: false, list: "none" },
+    animation: null,
+  };
 }
 
 function repository(): SlideRepository {
@@ -96,6 +110,23 @@ describe("SlideService", () => {
     ]));
   });
 
+  it("resolves Tailwind font-size/color classes in a generation response before persisting", async () => {
+    const slide = { number: 1, width: 960, height: 540, elements: [textElementWithClasses("Title", "text-4xl", "text-blue-500")] };
+    vi.mocked(generator.generate).mockResolvedValue(aiResponse(JSON.stringify({ slides: [slide, wireSlide(2)] })));
+    await service.generate("user-1", { ...creation, outline });
+    const document = vi.mocked(repo.completeStructuredGeneration).mock.calls[0][1];
+    const titleNode = document.nodes.find((node) => (node.props as { text?: string }).text === "Title")!;
+    expect(titleNode.props).toMatchObject({ fontSize: 36, color: TAILWIND_DEFAULT_TEXT_COLORS["text-blue-500"] });
+  });
+
+  it("rejects a generation response with an unresolvable Tailwind class, without persisting", async () => {
+    const slide = { number: 1, width: 960, height: 540, elements: [textElementWithClasses("Title", "text-not-a-real-class", "text-blue-500")] };
+    vi.mocked(generator.generate).mockResolvedValue(aiResponse(JSON.stringify({ slides: [slide, wireSlide(2)] })));
+    await expect(service.generate("user-1", { ...creation, outline })).rejects.toMatchObject({ code: "INVALID_MODEL_OUTPUT" });
+    expect(repo.completeStructuredGeneration).not.toHaveBeenCalled();
+    expect(repo.failGeneration).toHaveBeenCalled();
+  });
+
   it("applies multiple replacements in one repository edit", async () => {
     vi.mocked(generator.generate).mockResolvedValue(aiResponse(JSON.stringify({ slides: [wireSlide(1, [textElement("A")]), wireSlide(2, [textElement("B")])] })));
     await service.edit("user-1", { generationId: stored.id, edits: [{ slideNumber: 1, prompt: "A" }, { slideNumber: 2, prompt: "B" }] });
@@ -103,6 +134,22 @@ describe("SlideService", () => {
     const call = vi.mocked(repo.appendStructuredEdit).mock.calls[0][0];
     expect(call.replacements.slides.map((slide) => slide.number).sort()).toEqual([1, 2]);
     expect(call.replacements.nodes.some((node) => (node.props as { text: string }).text === "A")).toBe(true);
+  });
+
+  it("resolves Tailwind classes in a batch-edit response before persisting", async () => {
+    const slide = { number: 1, width: 960, height: 540, elements: [textElementWithClasses("Edited", "text-lg", "text-green-500")] };
+    vi.mocked(generator.generate).mockResolvedValue(aiResponse(JSON.stringify({ slides: [slide] })));
+    await service.edit("user-1", { generationId: stored.id, edits: [{ slideNumber: 1, prompt: "A" }] });
+    const call = vi.mocked(repo.appendStructuredEdit).mock.calls[0][0];
+    const node = call.replacements.nodes.find((n) => (n.props as { text?: string }).text === "Edited")!;
+    expect(node.props).toMatchObject({ fontSize: 18, color: TAILWIND_DEFAULT_TEXT_COLORS["text-green-500"] });
+  });
+
+  it("rejects a batch-edit response with an unresolvable Tailwind class, without persisting", async () => {
+    const slide = { number: 1, width: 960, height: 540, elements: [textElementWithClasses("Edited", "text-lg", "text-nope-500")] };
+    vi.mocked(generator.generate).mockResolvedValue(aiResponse(JSON.stringify({ slides: [slide] })));
+    await expect(service.edit("user-1", { generationId: stored.id, edits: [{ slideNumber: 1, prompt: "A" }] })).rejects.toMatchObject({ code: "INVALID_MODEL_OUTPUT" });
+    expect(repo.appendStructuredEdit).not.toHaveBeenCalled();
   });
 
   it("rejects incomplete replacement sets without persisting", async () => {

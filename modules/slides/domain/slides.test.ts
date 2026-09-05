@@ -38,6 +38,17 @@ describe("slide domain", () => {
     expect(editSystemPrompt("{}")).toContain("exactly one full replacement slide");
     expect(editSystemPrompt("{}")).toContain("960 wide by 540 tall");
   });
+  it("requires text fontSize/color to be whitelisted Tailwind classes, listing real whitelist entries", () => {
+    for (const prompt of [generationSystemPrompt("{}"), editSystemPrompt("{}")]) {
+      expect(prompt).toContain("MUST each be exactly one of the following Tailwind utility classes");
+      expect(prompt).toContain("never a raw number, hex value");
+      expect(prompt).toContain("text-lg");
+      expect(prompt).toContain("text-[length:<value><px|rem|em>]");
+      expect(prompt).toContain("text-black");
+      expect(prompt).toMatch(/text-\{[a-z|]*\bred\b[a-z|]*\}-\{[0-9|]*\b500\b[0-9|]*\}/);
+      expect(prompt).toContain("text-[color:<#hex|rgb()|hsl()|css-name>]");
+    }
+  });
   it("validates uploads and converts them to base64", async () => {
     await expect(toFilePart(new File(["report"], "report.txt", { type: "text/plain" }), "report")).resolves.toMatchObject({ source: { data: "cmVwb3J0" } });
     await expect(toFilePart(new File(["%PDF"], "template.pdf", { type: "application/pdf" }), "template")).resolves.toMatchObject({ source: { mediaType: "application/pdf" } });
