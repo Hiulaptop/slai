@@ -45,6 +45,7 @@ yarn-error.log*
 next-env.d.ts
 
 .codex/
+.claude/
 .factory/
 .opencode/
 # Added by code-review-graph
