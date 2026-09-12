@@ -45,6 +45,7 @@ jobs:
       DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
       APP_PORT: ${{ vars.APP_PORT || '3000' }}
       HEALTHCHECK_URL: ${{ vars.HEALTHCHECK_URL || 'https://slai.studev.net/' }}
+      PM2_HOME: ${{ vars.PM2_HOME }}
     steps:
       - name: Validate deployment configuration
         env:
@@ -53,7 +54,7 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          for variable in DEPLOY_HOST DEPLOY_USER DEPLOY_PATH DEPLOY_SHA APP_PORT HEALTHCHECK_URL; do
+          for variable in DEPLOY_HOST DEPLOY_USER DEPLOY_PATH DEPLOY_SHA APP_PORT HEALTHCHECK_URL PM2_HOME; do
             if [[ -z "${!variable:-}" ]]; then
               echo "::error title=Missing deployment configuration::${variable} is not configured"
               exit 1
@@ -89,16 +90,19 @@ jobs:
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
             "$DEPLOY_USER@$DEPLOY_HOST" \
-            bash -s -- "$DEPLOY_PATH" "$DEPLOY_SHA" "$APP_PORT" <<'REMOTE'
+            bash -s -- "$DEPLOY_PATH" "$DEPLOY_SHA" "$APP_PORT" "$PM2_HOME" <<'REMOTE'
           set -Eeuo pipefail
 
           deploy_path="$1"
           deploy_sha="$2"
           app_port="$3"
+          pm2_home="$4"
 
           [[ "$deploy_path" = /* ]] || { echo "DEPLOY_PATH must be absolute" >&2; exit 1; }
           [[ -d "$deploy_path" ]] || { echo "DEPLOY_PATH does not exist: $deploy_path" >&2; exit 1; }
           [[ -d "$deploy_path/.git" ]] || { echo "DEPLOY_PATH is not a git checkout: $deploy_path" >&2; exit 1; }
+          [[ "$pm2_home" = /* ]] || { echo "PM2_HOME must be absolute" >&2; exit 1; }
+          [[ -d "$pm2_home" ]] || { echo "PM2_HOME does not exist: $pm2_home" >&2; exit 1; }
           command -v git >/dev/null
           command -v pnpm >/dev/null
           [[ -x /usr/bin/pm2 ]] || { echo "/usr/bin/pm2 is not executable" >&2; exit 1; }
@@ -113,8 +117,8 @@ jobs:
           pnpm db:deploy
           pnpm build
 
-          PORT="$app_port" SLAI_APP_DIR="$deploy_path" /usr/bin/pm2 startOrRestart ecosystem.config.cjs --update-env
-          /usr/bin/pm2 save
+          PORT="$app_port" SLAI_APP_DIR="$deploy_path" PM2_HOME="$pm2_home" /usr/bin/pm2 startOrRestart ecosystem.config.cjs --update-env
+          PM2_HOME="$pm2_home" /usr/bin/pm2 save
           REMOTE
 
       - name: Clean up SSH identity
@@ -137,7 +141,7 @@ jobs:
             --retry-delay 5 \
             --retry-all-errors \
             "$HEALTHCHECK_URL" >/dev/null; then
-            echo "::warning title=Health check skipped::Inspect /usr/bin/pm2 status and /usr/bin/pm2 logs slai on the server"
+            echo "::warning title=Health check skipped::Inspect PM2_HOME=$PM2_HOME /usr/bin/pm2 status and PM2_HOME=$PM2_HOME /usr/bin/pm2 logs slai on the server"
             exit 1
           fi
 
