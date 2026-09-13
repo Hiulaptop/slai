@@ -21,14 +21,7 @@ const id = "123e4567-e89b-12d3-a456-426614174000";
 const user = { id: "user-1", email: "u@test.com", status: "ACTIVE", lastLoginAt: null, createdAt: new Date(), updatedAt: new Date() };
 const presentation = { id, userId: "user-1", status: "COMPLETED", approvedOutline: { title: "Deck", slides: [{ number: 1, title: "One", summary: "S" }] }, htmlContent: null, currentRevisionNumber: 1, nextRevisionNumber: 2, provider: "openai", modelId: "model", finishReason: null, promptTokens: 1, completionTokens: 2, totalTokens: 3, title: "Deck", createdAt: new Date("2026-08-02T00:00:00Z"), updatedAt: new Date("2026-08-02T00:01:00Z"), completedAt: new Date("2026-08-02T00:01:00Z") };
 const structuredRevision = {
-  animationRegistryVersion: 1,
-  slides: [{
-    number: 1,
-    width: 960,
-    height: 540,
-    props: {},
-    elements: [{ id: "el-0", type: "text", schemaVersion: 1, geometry: { x: 0, y: 0, width: 400, height: 80, zIndex: 0 }, props: { text: "Hello", styleType: "body", fontSize: 18, fontWeight: 400, color: "#171713", backgroundColor: null, align: "left", bold: false, italic: false, underline: false, list: "none" }, animation: null, children: [] }],
-  }],
+  slides: [{ number: 1, html: "<p>Hello</p>", css: "" }],
 };
 const presentationDetail = { generation: presentation, structuredRevision, undoableSlideNumbers: [1] };
 
@@ -110,7 +103,7 @@ describe("slide routes", () => {
     expect(response.status).toBe(200);
     expect(mocks.detail).toHaveBeenCalledWith("user-1", id);
     expect(body).toMatchObject({ id, title: "Deck" });
-    expect(body.document).toMatchObject({ animationRegistryVersion: 1 });
+    expect(body.document).toMatchObject({ slides: [{ number: 1, html: "<p>Hello</p>" }] });
     expect(body.undoableSlideNumbers).toEqual([1]);
     expect(JSON.stringify(body)).not.toMatch(/userId|nextRevisionNumber|requestPayload|htmlContent/);
   });
@@ -153,7 +146,7 @@ describe("slide routes", () => {
   });
 
   it("saves a design with its expected revision", async () => {
-    const slides = [{ number: 1, width: 960, height: 540, elements: [] }];
+    const slides = [{ number: 1, html: "<p>Hi</p>", css: "" }];
     const request = new Request("http://localhost/api/slides/design/save", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ generationId: id, slides, expectedRevision: 1 }) });
     const response = await saveDesign(request);
     expect(response.status).toBe(200);
@@ -162,7 +155,7 @@ describe("slide routes", () => {
 
   it("maps a stale design-save revision to a 409 conflict", async () => {
     mocks.saveDesign.mockRejectedValueOnce(new SlideError("CONFLICT", "Presentation changed concurrently"));
-    const slides = [{ number: 1, width: 960, height: 540, elements: [] }];
+    const slides = [{ number: 1, html: "<p>Hi</p>", css: "" }];
     const request = new Request("http://localhost/api/slides/design/save", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ generationId: id, slides, expectedRevision: 1 }) });
     expect((await saveDesign(request)).status).toBe(409);
   });
@@ -204,15 +197,12 @@ describe("slide routes", () => {
     expect(response.status).toBe(409);
   });
 
-  it("maps a renderer failure (e.g. a malformed stored graph) to a safe 500 without leaking internals", async () => {
-    mocks.render.mockResolvedValueOnce({
-      animationRegistryVersion: 1,
-      slides: [{ number: 1, width: 960, height: 540, props: {}, elements: [{ id: "el-0", type: "unregistered-type", schemaVersion: 1, geometry: { x: 0, y: 0, width: 10, height: 10, zIndex: 0 }, props: {}, animation: null, children: [] }] }],
-    });
+  it("maps a renderer failure (e.g. no slides) to a safe 500 without leaking internals", async () => {
+    mocks.render.mockResolvedValueOnce({ slides: [] });
     const response = await downloadPresentation(new Request(`http://localhost/api/slides/${id}/download`), { params: Promise.resolve({ generationId: id }) });
     expect(response.status).toBe(500);
     const body = await response.json();
-    expect(body.error.message).toBe("Unable to render structured revision");
+    expect(body.error.message).toBe("Structured revision has no slides");
   });
 });
 

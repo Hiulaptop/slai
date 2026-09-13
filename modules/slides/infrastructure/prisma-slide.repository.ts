@@ -2,7 +2,6 @@ import type { Prisma } from "../../../generated/prisma/client";
 import { db } from "../../database/infrastructure/client";
 import type { SlideRepository, StoredPresentation } from "../application/slide.ports";
 import { extractSlides, replaceSlides, slideNumbers } from "../domain/html";
-import { CURRENT_ANIMATION_REGISTRY_VERSION } from "../domain/structured/animation-registry";
 import type { FlattenedDocument } from "../domain/structured/compose";
 import type { StructuredRevision } from "../domain/structured/types";
 import { loadStructuredRevision } from "./structured/graph-repository";
@@ -140,15 +139,15 @@ export class PrismaSlideRepository implements SlideRepository {
     if (generation.currentRevisionNumber === null) return null;
     const revision = await db.slideRevision.findUnique({
       where: { slideGenerationId_revisionNumber: { slideGenerationId: generation.id, revisionNumber: generation.currentRevisionNumber } },
-      select: { id: true, animationRegistryVersion: true },
+      select: { id: true },
     });
     if (!revision) return null;
-    return loadStructuredRevision(db, generation.id, revision.id, revision.animationRegistryVersion);
+    return loadStructuredRevision(db, revision.id);
   }
 
-  completeStructuredGeneration(id: string, document: FlattenedDocument, animationRegistryVersion: number, response: Parameters<SlideRepository["completeGeneration"]>[2]) {
+  completeStructuredGeneration(id: string, document: FlattenedDocument, response: Parameters<SlideRepository["completeGeneration"]>[2]) {
     return db.$transaction(async (tx) => {
-      const slideSnapshotIdByNumber = await resolveStructuredSlides(tx, id, document.nodes, document.children, document.slides);
+      const slideSnapshotIdByNumber = await resolveStructuredSlides(tx, id, document.slides);
       const revisionId = await writeStructuredRevision(tx, {
         slideGenerationId: id,
         expectedCurrentRevisionNumber: null,
@@ -156,7 +155,6 @@ export class PrismaSlideRepository implements SlideRepository {
         operation: "GENERATE",
         editRequest: undefined,
         changedSlideNumbers: document.slides.map((slide) => slide.number),
-        animationRegistryVersion,
         slideSnapshotIdByNumber,
       });
       if (!revisionId) throw new Error("Unexpected compare-and-swap conflict completing a brand-new generation");
@@ -176,9 +174,9 @@ export class PrismaSlideRepository implements SlideRepository {
     });
   }
 
-  saveStructuredDesign(input: { generation: StoredPresentation; document: FlattenedDocument; animationRegistryVersion: number; expectedRevision: number | null }) {
+  saveStructuredDesign(input: { generation: StoredPresentation; document: FlattenedDocument; expectedRevision: number | null }) {
     return db.$transaction(async (tx) => {
-      const slideSnapshotIdByNumber = await resolveStructuredSlides(tx, input.generation.id, input.document.nodes, input.document.children, input.document.slides);
+      const slideSnapshotIdByNumber = await resolveStructuredSlides(tx, input.generation.id, input.document.slides);
       const revisionId = await writeStructuredRevision(tx, {
         slideGenerationId: input.generation.id,
         expectedCurrentRevisionNumber: input.expectedRevision,
@@ -186,7 +184,6 @@ export class PrismaSlideRepository implements SlideRepository {
         operation: "EDIT",
         editRequest: undefined,
         changedSlideNumbers: input.document.slides.map((slide) => slide.number),
-        animationRegistryVersion: input.animationRegistryVersion,
         slideSnapshotIdByNumber,
       });
       if (!revisionId) return null;
@@ -194,7 +191,7 @@ export class PrismaSlideRepository implements SlideRepository {
     });
   }
 
-  appendStructuredEdit(input: { generation: StoredPresentation; replacements: FlattenedDocument; animationRegistryVersion: number; editRequest: unknown }) {
+  appendStructuredEdit(input: { generation: StoredPresentation; replacements: FlattenedDocument; editRequest: unknown }) {
     return db.$transaction(async (tx) => {
       if (input.generation.currentRevisionNumber === null) return null;
       const currentRevision = await tx.slideRevision.findUnique({
@@ -205,7 +202,7 @@ export class PrismaSlideRepository implements SlideRepository {
       const currentComposition = await tx.slideRevisionSlide.findMany({ where: { slideRevisionId: currentRevision.id } });
       const slideSnapshotIdByNumber = new Map(currentComposition.map((row) => [row.slideNumber, row.slideSnapshotId]));
 
-      const changedSnapshotIds = await resolveStructuredSlides(tx, input.generation.id, input.replacements.nodes, input.replacements.children, input.replacements.slides);
+      const changedSnapshotIds = await resolveStructuredSlides(tx, input.generation.id, input.replacements.slides);
       changedSnapshotIds.forEach((snapshotId, slideNumber) => slideSnapshotIdByNumber.set(slideNumber, snapshotId));
 
       const revisionId = await writeStructuredRevision(tx, {
@@ -215,7 +212,6 @@ export class PrismaSlideRepository implements SlideRepository {
         operation: "EDIT",
         editRequest: input.editRequest as Prisma.InputJsonValue,
         changedSlideNumbers: input.replacements.slides.map((slide) => slide.number),
-        animationRegistryVersion: input.animationRegistryVersion,
         slideSnapshotIdByNumber,
       });
       if (!revisionId) return null;
@@ -228,7 +224,7 @@ export class PrismaSlideRepository implements SlideRepository {
       if (generation.currentRevisionNumber === null) return null;
       const currentRevision = await tx.slideRevision.findUnique({
         where: { slideGenerationId_revisionNumber: { slideGenerationId: generation.id, revisionNumber: generation.currentRevisionNumber } },
-        select: { id: true, animationRegistryVersion: true },
+        select: { id: true },
       });
       if (!currentRevision) return null;
 
@@ -247,7 +243,6 @@ export class PrismaSlideRepository implements SlideRepository {
         operation: "UNDO",
         editRequest: { slideNumber, restoredFromRevision: target.revisionNumber } as Prisma.InputJsonValue,
         changedSlideNumbers: [slideNumber],
-        animationRegistryVersion: currentRevision.animationRegistryVersion ?? CURRENT_ANIMATION_REGISTRY_VERSION,
         slideSnapshotIdByNumber,
       });
       if (!revisionId) return null;

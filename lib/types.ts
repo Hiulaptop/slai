@@ -1,8 +1,8 @@
 import type { WireSlide } from "@/modules/slides/domain/structured/compose";
 import type { StructuredRevision } from "@/modules/slides/domain/structured/types";
 
-export type { ElementChild, ElementNode, SlideDocument, StructuredRevision } from "@/modules/slides/domain/structured/types";
-export type { WireElement, WireSlide } from "@/modules/slides/domain/structured/compose";
+export type { SlideDocument, StructuredRevision } from "@/modules/slides/domain/structured/types";
+export type { WireSlide } from "@/modules/slides/domain/structured/compose";
 
 export type UserStatus = "ACTIVE" | "DISABLED";
 
@@ -82,7 +82,9 @@ export interface PresentationDetail {
 
 export interface SlideEdit {
   slideNumber: number;
-  prompt: string;
+  prompt?: string;
+  html?: string;
+  css?: string;
 }
 
 export interface ApiErrorBody {

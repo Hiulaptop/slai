@@ -21,33 +21,22 @@ describe("slide domain", () => {
     expect(approvedOutlineSchema(52).safeParse({ title: "Deck", slides }).success).toBe(false);
   });
   it("parses fenced JSON and validates its schema", () => {
-    const json = '```json\n{"slides":[{"number":1,"width":960,"height":540,"elements":[]}]}\n```';
+    const json = '```json\n{"slides":[{"number":1,"html":"<p>Hi</p>","css":""}]}\n```';
     expect(parseModelJson(json, structuredSlidesResponseSchema).slides[0].number).toBe(1);
     expect(() => parseModelJson("not json", outlineSchema)).toThrowError(expect.objectContaining({ code: "INVALID_MODEL_OUTPUT" }));
   });
   it("defines explicit prompt contracts", () => {
     expect(OUTLINE_SYSTEM_PROMPT).toContain("Return JSON only");
     expect(OUTLINE_SYSTEM_PROMPT).not.toContain("1-50");
-    expect(generationSystemPrompt("{}")).toContain("\"type\":\"text|shape|table\"");
+    expect(generationSystemPrompt("{}")).toContain("\"html\":\"...\",\"css\":\"...\"");
     expect(generationSystemPrompt("{}")).toContain("every PDF page as a rendered image");
     expect(generationSystemPrompt("{}")).toContain("Never invent, estimate, extrapolate");
     expect(generationSystemPrompt("{}")).toContain("never factual sources");
     expect(generationSystemPrompt("{}")).toContain("Return JSON only");
     expect(generationSystemPrompt("{}")).toContain("960 wide by 540 tall");
-    expect(generationSystemPrompt("{}")).toContain("Never use type \"image\"");
+    expect(generationSystemPrompt("{}")).toContain("Never use <script>");
     expect(editSystemPrompt("{}")).toContain("exactly one full replacement slide");
     expect(editSystemPrompt("{}")).toContain("960 wide by 540 tall");
-  });
-  it("requires text fontSize/color to be whitelisted Tailwind classes, listing real whitelist entries", () => {
-    for (const prompt of [generationSystemPrompt("{}"), editSystemPrompt("{}")]) {
-      expect(prompt).toContain("MUST each be exactly one of the following Tailwind utility classes");
-      expect(prompt).toContain("never a raw number, hex value");
-      expect(prompt).toContain("text-lg");
-      expect(prompt).toContain("text-[length:<value><px|rem|em>]");
-      expect(prompt).toContain("text-black");
-      expect(prompt).toMatch(/text-\{[a-z|]*\bred\b[a-z|]*\}-\{[0-9|]*\b500\b[0-9|]*\}/);
-      expect(prompt).toContain("text-[color:<#hex|rgb()|hsl()|css-name>]");
-    }
   });
   it("validates uploads and converts them to base64", async () => {
     await expect(toFilePart(new File(["report"], "report.txt", { type: "text/plain" }), "report")).resolves.toMatchObject({ source: { data: "cmVwb3J0" } });

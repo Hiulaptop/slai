@@ -6,10 +6,9 @@ import { approvedOutlineSchema, outlineSchema, type BatchEdit, type DesignBootst
 import { assertAggregateUpload, fileMetadataList, toFileParts } from "../domain/uploads";
 import { decodePresentationCursor, encodePresentationCursor } from "../domain/presentation-cursor";
 import type { PresentationListQuery } from "../domain/slide.schemas";
-import { CURRENT_ANIMATION_REGISTRY_VERSION } from "../domain/structured/animation-registry";
 import { flattenWireSlides, structuredSlidesResponseSchema, type FlattenedDocument, type WireSlide } from "../domain/structured/compose";
-import { validateStructuredCommand } from "../domain/structured/graph-validator";
-import type { StructuredRevision } from "../domain/structured/types";
+import { validateStructuredCommand } from "../domain/structured/validate";
+import type { SlideDocument, StructuredRevision } from "../domain/structured/types";
 import { PresentationAccessPolicy } from "./presentation-access.policy";
 import type { AIGenerator, PresentationPage, SlideCreationInput, SlideOutlineInput, SlideRepository, StoredPresentation } from "./slide.ports";
 
@@ -115,8 +114,8 @@ export class SlideService {
       const response = await this.callAI(ai.generator, { modelId: ai.modelId, messages: [{ role: "system", content: generationSystemPrompt(JSON.stringify(parsedOutline)) }, { role: "user", content: [{ type: "text", text: creationInstruction(input) }, { type: "text", text: "AUTHORITATIVE DATA FILES follow. Every factual claim, name, date, and number must come from these files." }, ...dataParts, { type: "text", text: "VISUAL TEMPLATE FILES follow. Use them only for visual design; never treat their text or numbers as presentation facts." }, ...templateParts] }], temperature: 0.4, responseFormat: "json_object" }, signal);
       const parsed = parseModelJson(response.text, structuredSlidesResponseSchema);
       if (parsed.slides.length !== parsedOutline.slides.length) throw new SlideError("INVALID_MODEL_OUTPUT", "AI returned an unexpected slide count");
-      const document = this.parseStructuredSlides(parsed.slides, CURRENT_ANIMATION_REGISTRY_VERSION, "INVALID_MODEL_OUTPUT", true);
-      const completed = await this.repository.completeStructuredGeneration(generation.id, document, CURRENT_ANIMATION_REGISTRY_VERSION, response);
+      const document = this.parseStructuredSlides(parsed.slides, "INVALID_MODEL_OUTPUT", true);
+      const completed = await this.repository.completeStructuredGeneration(generation.id, document, response);
       return this.withStructuredDetail(completed);
     } catch (error) {
       await this.repository.failGeneration(generation.id, error instanceof SlideError ? error.code : "PROVIDER_ERROR", "Slide generation failed");
@@ -137,9 +136,7 @@ export class SlideService {
       })),
     };
     const document: FlattenedDocument = {
-      nodes: [],
-      children: [],
-      slides: Array.from({ length: slideCount }, (_, index) => ({ number: index + 1, width: 960, height: 540, props: {}, topLevelElementIds: [] })),
+      slides: Array.from({ length: slideCount }, (_, index) => ({ number: index + 1, html: "", css: "" })),
     };
     const generation = await this.repository.createGeneration({
       userId,
@@ -150,32 +147,52 @@ export class SlideService {
       requestPayload: { kind: "design-bootstrap", mode: input.mode, slideCount },
     });
     const response: AIResponse = { text: "", model: "blank", finishReason: "design_bootstrap", usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } };
-    const completed = await this.repository.completeStructuredGeneration(generation.id, document, CURRENT_ANIMATION_REGISTRY_VERSION, response);
+    const completed = await this.repository.completeStructuredGeneration(generation.id, document, response);
     return this.withStructuredDetail(completed);
   }
   async saveDesign(userId: string, input: DesignSaveInput): Promise<PresentationDetail> {
     const generation = await this.access.require(input.generationId, userId, "mutate");
-    const document = this.parseStructuredSlides(input.slides, CURRENT_ANIMATION_REGISTRY_VERSION, "INVALID_INPUT", true);
-    const updated = await this.repository.saveStructuredDesign({ generation, document, animationRegistryVersion: CURRENT_ANIMATION_REGISTRY_VERSION, expectedRevision: input.expectedRevision });
+    const document = this.parseStructuredSlides(input.slides, "INVALID_INPUT", true);
+    const updated = await this.repository.saveStructuredDesign({ generation, document, expectedRevision: input.expectedRevision });
     if (!updated) throw new SlideError("CONFLICT", "Presentation changed concurrently");
     return this.withStructuredDetail(updated);
   }
+  // Each edit item carries a free-text `prompt`, a directly authored
+  // `html`/`css` replacement from the canvas, or both. Direct replacements
+  // never call the AI (and a failure there is a caller fault, 400); the
+  // remaining slides (those with only a `prompt`) go to the AI in one
+  // request as before (and a failure there is a provider fault, 502) - see
+  // slide-generation-workflow's "Batch slide editing" requirement.
   async edit(userId: string, input: BatchEdit, signal?: AbortSignal): Promise<PresentationDetail> {
-    const ai = this.resolveAI();
     const generation = await this.access.require(input.generationId, userId, "mutate");
     const outline = outlineSchema.parse(generation.approvedOutline);
     const numbers = input.edits.map((edit) => edit.slideNumber);
     if (numbers.some((number) => number > outline.slides.length)) throw new SlideError("NOT_FOUND", "Slide not found");
     const current = await this.repository.loadCurrentStructuredRevision(generation);
     if (!current) throw new SlideError("CONFLICT", "This presentation has not been migrated to the structured format yet");
-    const selected = current.slides.filter((slide) => numbers.includes(slide.number));
-    const context = JSON.stringify({ edits: input.edits, selected, outline: outline.slides.filter((slide) => numbers.includes(slide.number)) });
-    const response = await this.callAI(ai.generator, { modelId: ai.modelId, messages: [{ role: "system", content: editSystemPrompt(context) }, { role: "user", content: "Apply the requested slide edits." }], temperature: 0.3, responseFormat: "json_object" }, signal);
-    const parsed = parseModelJson(response.text, structuredSlidesResponseSchema);
-    const returned = parsed.slides.map((slide) => slide.number);
-    if (returned.length !== numbers.length || new Set(returned).size !== returned.length || numbers.some((number) => !returned.includes(number))) throw new SlideError("INVALID_MODEL_OUTPUT", "AI returned an invalid replacement set");
-    const replacements = this.parseStructuredSlides(parsed.slides, current.animationRegistryVersion, "INVALID_MODEL_OUTPUT", false);
-    const updated = await this.repository.appendStructuredEdit({ generation, replacements, animationRegistryVersion: current.animationRegistryVersion, editRequest: input.edits });
+
+    const directEdits = input.edits.filter((edit) => typeof edit.html === "string");
+    const aiEdits = input.edits.filter((edit) => typeof edit.html !== "string");
+
+    const directSlides: SlideDocument[] = directEdits.map((edit) => ({ number: edit.slideNumber, html: edit.html!, css: edit.css ?? "" }));
+    const directReplacements = flattenWireSlides(directSlides, "INVALID_INPUT").slides;
+    if (directReplacements.length) validateStructuredCommand(directReplacements, { requireContiguousFromOne: false });
+
+    let aiReplacements: SlideDocument[] = [];
+    if (aiEdits.length) {
+      const ai = this.resolveAI();
+      const aiNumbers = aiEdits.map((edit) => edit.slideNumber);
+      const selected = current.slides.filter((slide) => aiNumbers.includes(slide.number));
+      const context = JSON.stringify({ edits: aiEdits, selected, outline: outline.slides.filter((slide) => aiNumbers.includes(slide.number)) });
+      const response = await this.callAI(ai.generator, { modelId: ai.modelId, messages: [{ role: "system", content: editSystemPrompt(context) }, { role: "user", content: "Apply the requested slide edits." }], temperature: 0.3, responseFormat: "json_object" }, signal);
+      const parsed = parseModelJson(response.text, structuredSlidesResponseSchema);
+      const returned = parsed.slides.map((slide) => slide.number);
+      if (returned.length !== aiNumbers.length || new Set(returned).size !== returned.length || aiNumbers.some((number) => !returned.includes(number))) throw new SlideError("INVALID_MODEL_OUTPUT", "AI returned an invalid replacement set");
+      aiReplacements = this.parseStructuredSlides(parsed.slides, "INVALID_MODEL_OUTPUT", false).slides;
+    }
+
+    const replacements: FlattenedDocument = { slides: [...directReplacements, ...aiReplacements] };
+    const updated = await this.repository.appendStructuredEdit({ generation, replacements, editRequest: input.edits });
     if (!updated) throw new SlideError("CONFLICT", "Presentation changed concurrently");
     return this.withStructuredDetail(updated);
   }
@@ -196,16 +213,15 @@ export class SlideService {
     const undoableSlideNumbers = structuredRevision ? await this.repository.undoableStructuredSlideNumbers(generation) : [];
     return { generation, structuredRevision, undoableSlideNumbers };
   }
-  // Flattens the AI/editor-authored nested wire slides into the flat graph
-  // the repository requires, then runs full structural validation. Any
-  // failure - from the flattener or from the validator - is re-thrown with
-  // `errorCode` so a bad AI response maps to a provider fault (502) while a
-  // bad editor-authored command maps to a caller fault (400); see
-  // slide.errors.ts and route-helpers.ts's status mapping.
-  private parseStructuredSlides(wireSlides: WireSlide[], animationRegistryVersion: number, errorCode: SlideErrorCode, requireContiguousFromOne: boolean): FlattenedDocument {
-    const flattened = flattenWireSlides(wireSlides, animationRegistryVersion, errorCode);
+  // Sanitizes the AI/editor-authored wire slides, then runs structural
+  // validation. Any failure - from sanitization or from the validator - is
+  // re-thrown with `errorCode` so a bad AI response maps to a provider fault
+  // (502) while a bad editor-authored command maps to a caller fault (400);
+  // see slide.errors.ts and route-helpers.ts's status mapping.
+  private parseStructuredSlides(wireSlides: WireSlide[], errorCode: SlideErrorCode, requireContiguousFromOne: boolean): FlattenedDocument {
+    const flattened = flattenWireSlides(wireSlides, errorCode);
     try {
-      validateStructuredCommand(flattened.nodes, flattened.children, flattened.slides, { requireContiguousFromOne });
+      validateStructuredCommand(flattened.slides, { requireContiguousFromOne });
     } catch (error) {
       if (error instanceof SlideError && error.code !== errorCode) throw new SlideError(errorCode, error.message, { cause: error });
       throw error;

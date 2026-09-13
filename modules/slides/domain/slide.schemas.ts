@@ -47,19 +47,26 @@ export function approvedOutlineSchema(slideCount: number) {
   });
 }
 
+// An edit item carries a free-text instruction for the AI, a directly
+// authored HTML/CSS replacement from the canvas, or both - see
+// slide-generation-workflow's "Batch slide editing" requirement. At least
+// one of `prompt` or `html` must be present.
+const batchEditItemSchema = z
+  .object({
+    slideNumber: z.number().int().min(1),
+    prompt: z.string().trim().max(2_000).optional(),
+    html: z.string().min(1).optional(),
+    css: z.string().optional(),
+  })
+  .strict()
+  .refine((edit) => (edit.prompt && edit.prompt.length > 0) || typeof edit.html === "string", {
+    message: "Provide a prompt, a directly authored html replacement, or both",
+  });
+
 export const batchEditSchema = z
   .object({
     generationId: z.uuid(),
-    edits: z
-      .array(
-        z
-          .object({
-            slideNumber: z.number().int().min(1),
-            prompt: z.string().trim().min(1).max(2_000),
-          })
-          .strict(),
-      )
-      .min(1),
+    edits: z.array(batchEditItemSchema).min(1),
   })
   .strict()
   .superRefine((input, context) => {

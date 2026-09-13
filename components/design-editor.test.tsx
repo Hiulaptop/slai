@@ -1,22 +1,45 @@
 // @vitest-environment jsdom
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { forwardRef, useImperativeHandle } from "react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { PresentationDetail } from "@/lib/types";
-import { DesignEditor } from "./design-editor";
 
-const mocks = vi.hoisted(() => ({ authFetch: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  authFetch: vi.fn(),
+  serialize: vi.fn((): { html: string; css: string } | null => ({ html: "<p>edited</p>", css: ".x{color:red}" })),
+}));
 
 vi.mock("@/lib/auth/auth-context", () => ({ useAuth: () => ({ authFetch: mocks.authFetch }) }));
+
+// The real GrapesJS-backed canvas is covered by slide-html-canvas.test.tsx;
+// here we only need to prove DesignEditor wires html/css/ref correctly.
+vi.mock("@/components/slide-html-canvas", () => ({
+  SlideHtmlCanvas: forwardRef(function MockCanvas(
+    props: { html: string; css: string; onDirtyChange?: (dirty: boolean) => void; chrome?: { toolbar?: boolean; blockPalette?: boolean; layerList?: boolean }; saveState?: string },
+    ref,
+  ) {
+    useImperativeHandle(ref, () => ({ serialize: mocks.serialize }));
+    return (
+      <div aria-label="Slide canvas" data-css={props.css} data-html={props.html} data-save-state={props.saveState}>
+        <button onClick={() => props.onDirtyChange?.(true)} type="button">
+          Simulate edit
+        </button>
+      </div>
+    );
+  }),
+}));
+
+import { DesignEditor } from "./design-editor";
 
 const blankDetail: PresentationDetail = {
   id: "design-1",
   title: "My design",
   status: "COMPLETED",
   outline: null,
-  document: { animationRegistryVersion: 1, slides: [{ number: 1, width: 960, height: 540, props: {}, elements: [] }] },
+  document: { slides: [{ number: 1, html: "", css: "" }] },
   revisionNumber: 1,
   undoableSlideNumbers: [],
   createdAt: "2026-08-01T00:00:00.000Z",
@@ -28,35 +51,34 @@ const blankDetail: PresentationDetail = {
 
 beforeEach(() => {
   mocks.authFetch.mockReset();
+  mocks.serialize.mockReset().mockReturnValue({ html: "<p>edited</p>", css: ".x{color:red}" });
   mocks.authFetch.mockResolvedValue(Response.json(blankDetail));
 });
 
-async function clickCanvas() {
-  const canvas = await screen.findByLabelText("Slide canvas");
-  fireEvent.pointerDown(canvas, { clientX: 100, clientY: 60, pointerId: 1 });
-}
-
 describe("DesignEditor", () => {
+  it("renders the canvas with full chrome and reflects dirty/saved state in the toolbar's save-state indicator", async () => {
+    const user = userEvent.setup();
+    render(<DesignEditor generationId="design-1" />);
+    const canvas = await screen.findByLabelText("Slide canvas");
+    expect(canvas).toHaveAttribute("data-save-state", "saved");
+
+    await user.click(screen.getByRole("button", { name: "Simulate edit" }));
+    expect(canvas).toHaveAttribute("data-save-state", "dirty");
+  });
+
   it("loads the presentation and starts from its blank slide", async () => {
     render(<DesignEditor generationId="design-1" />);
     expect(await screen.findByLabelText("Presentation title")).toHaveValue("My design");
     expect(screen.getByLabelText("Slide canvas")).toBeVisible();
-    expect(screen.getByText("0 elements")).toBeVisible();
   });
 
-  it("creates an element with the active tool and selects it", async () => {
+  it("marks the design dirty and commits the serialized edit when the canvas reports a change", async () => {
     const user = userEvent.setup();
     render(<DesignEditor generationId="design-1" />);
     await screen.findByLabelText("Slide canvas");
 
-    await user.click(screen.getByRole("button", { name: "Rectangle" }));
-    await clickCanvas();
-
-    expect(screen.getByText("1 element")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Bring forward" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Send backward" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: /^Save$/ })).toBeVisible();
-    expect(screen.getByRole("heading", { name: "Properties" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Simulate edit" }));
+    expect(screen.getByRole("button", { name: "Save" })).toBeVisible();
   });
 
   it("adds slides and refuses to delete the last remaining slide", async () => {
@@ -73,41 +95,11 @@ describe("DesignEditor", () => {
     expect(screen.getByRole("button", { name: "Delete slide 1" })).toBeDisabled();
   });
 
-  it("creates a table with pre-populated cells", async () => {
+  it("saves the serialized canvas html/css with the expected revision and clears the dirty flag", async () => {
     const user = userEvent.setup();
     render(<DesignEditor generationId="design-1" />);
     await screen.findByLabelText("Slide canvas");
-
-    await user.click(screen.getByRole("button", { name: "Table" }));
-    await clickCanvas();
-
-    expect(screen.getByText("1 element")).toBeVisible();
-    expect(screen.getByLabelText("Edit cell row 1 column 1")).toBeVisible();
-    expect(screen.getByLabelText("Edit cell row 2 column 2")).toBeVisible();
-  });
-
-  it("edits a table cell's text content through the properties panel", async () => {
-    const user = userEvent.setup();
-    render(<DesignEditor generationId="design-1" />);
-    await screen.findByLabelText("Slide canvas");
-    await user.click(screen.getByRole("button", { name: "Table" }));
-    await clickCanvas();
-
-    await user.click(screen.getByLabelText("Edit cell row 1 column 1"));
-    const cellInput = await screen.findByLabelText(/Cell text \(row 1, column 1\)/);
-    await user.type(cellInput, "Revenue");
-    expect(cellInput).toHaveValue("Revenue");
-  });
-
-  it("saves the structured document with the expected revision and clears the dirty flag", async () => {
-    const user = userEvent.setup();
-    mocks.authFetch.mockResolvedValueOnce(Response.json(blankDetail));
-    render(<DesignEditor generationId="design-1" />);
-    await screen.findByLabelText("Slide canvas");
-
-    await user.click(screen.getByRole("button", { name: "Rectangle" }));
-    await clickCanvas();
-    expect(screen.getByRole("button", { name: "Save" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Simulate edit" }));
 
     mocks.authFetch.mockResolvedValueOnce(Response.json({ ...blankDetail, revisionNumber: 2 }));
     await user.click(screen.getByRole("button", { name: "Save" }));
@@ -117,15 +109,26 @@ describe("DesignEditor", () => {
     expect(path).toBe("/api/slides/design/save");
     const body = JSON.parse((init as RequestInit).body as string);
     expect(body).toMatchObject({ generationId: "design-1", expectedRevision: 1 });
-    expect(body.slides[0].elements[0]).toMatchObject({ type: "shape", props: { shapeType: "rectangle" } });
+    expect(body.slides[0]).toMatchObject({ number: 1, html: "<p>edited</p>", css: ".x{color:red}" });
+  });
+
+  it("does not save when the canvas serialization is rejected (unsafe content)", async () => {
+    const user = userEvent.setup();
+    mocks.serialize.mockReturnValue(null);
+    render(<DesignEditor generationId="design-1" />);
+    await screen.findByLabelText("Slide canvas");
+    await user.click(screen.getByRole("button", { name: "Simulate edit" }));
+
+    const callsBefore = mocks.authFetch.mock.calls.length;
+    await user.click(screen.getByRole("button", { name: /^(Save|Saved)$/ }));
+    expect(mocks.authFetch.mock.calls.length).toBe(callsBefore);
   });
 
   it("shows a conflict message on 409 and lets the user reload", async () => {
     const user = userEvent.setup();
     render(<DesignEditor generationId="design-1" />);
     await screen.findByLabelText("Slide canvas");
-    await user.click(screen.getByRole("button", { name: "Rectangle" }));
-    await clickCanvas();
+    await user.click(screen.getByRole("button", { name: "Simulate edit" }));
 
     mocks.authFetch.mockResolvedValueOnce(new Response(null, { status: 409 }));
     await user.click(screen.getByRole("button", { name: "Save" }));
@@ -145,8 +148,7 @@ describe("DesignEditor", () => {
 
     render(<DesignEditor generationId="design-1" />);
     await screen.findByLabelText("Slide canvas");
-    await user.click(screen.getByRole("button", { name: "Rectangle" }));
-    await clickCanvas();
+    await user.click(screen.getByRole("button", { name: "Simulate edit" }));
 
     mocks.authFetch.mockResolvedValueOnce(Response.json({ ...blankDetail, revisionNumber: 2 }));
     mocks.authFetch.mockResolvedValueOnce(new Response("<!doctype html><html></html>", { headers: { "content-type": "text/html" } }));
@@ -165,8 +167,7 @@ describe("DesignEditor", () => {
     const user = userEvent.setup();
     render(<DesignEditor generationId="design-1" />);
     await screen.findByLabelText("Slide canvas");
-    await user.click(screen.getByRole("button", { name: "Rectangle" }));
-    await clickCanvas();
+    await user.click(screen.getByRole("button", { name: "Simulate edit" }));
 
     mocks.authFetch.mockResolvedValueOnce(new Response(null, { status: 500 }));
     await user.click(screen.getByRole("button", { name: "Download HTML" }));
@@ -184,51 +185,6 @@ describe("DesignEditor", () => {
     mocks.authFetch.mockResolvedValue(Response.json({ ...blankDetail, document: null }));
     render(<DesignEditor generationId="design-1" />);
     expect(await screen.findByRole("heading", { name: "Not available in the visual editor yet" })).toBeVisible();
-  });
-
-  it("updates the canvas live preview via CSS custom property while dragging the font-size slider, without committing or touching the network until release", async () => {
-    const user = userEvent.setup();
-    render(<DesignEditor generationId="design-1" />);
-    await screen.findByLabelText("Slide canvas");
-    await user.click(screen.getByRole("button", { name: "Text" }));
-    await clickCanvas();
-
-    const slider = screen.getByLabelText(/Font size/);
-    const canvasNode = document.querySelector<HTMLElement>("[data-slai-element-id]");
-    expect(canvasNode).not.toBeNull();
-    expect(canvasNode!.style.getPropertyValue("--slai-font-size")).toBe("18px");
-
-    const callsBeforeDrag = mocks.authFetch.mock.calls.length;
-    fireEvent.change(slider, { target: { value: "90" } });
-
-    expect(canvasNode!.style.getPropertyValue("--slai-font-size")).toBe("90px");
-    expect(mocks.authFetch.mock.calls.length).toBe(callsBeforeDrag);
-
-    mocks.authFetch.mockResolvedValueOnce(Response.json({ ...blankDetail, revisionNumber: 2 }));
-    await user.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Saved" })).toBeVisible());
-    const [, init] = mocks.authFetch.mock.calls.at(-1)!;
-    const body = JSON.parse((init as RequestInit).body as string);
-    expect(body.slides[0].elements[0].props.fontSize).toBe(18);
-  });
-
-  it("commits the dragged font-size value on release, matching what gets sent to save", async () => {
-    const user = userEvent.setup();
-    render(<DesignEditor generationId="design-1" />);
-    await screen.findByLabelText("Slide canvas");
-    await user.click(screen.getByRole("button", { name: "Text" }));
-    await clickCanvas();
-
-    const slider = screen.getByLabelText(/Font size/);
-    fireEvent.change(slider, { target: { value: "90" } });
-    fireEvent.pointerUp(slider);
-
-    mocks.authFetch.mockResolvedValueOnce(Response.json({ ...blankDetail, revisionNumber: 2 }));
-    await user.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Saved" })).toBeVisible());
-    const [, init] = mocks.authFetch.mock.calls.at(-1)!;
-    const body = JSON.parse((init as RequestInit).body as string);
-    expect(body.slides[0].elements[0].props.fontSize).toBe(90);
   });
 
   it("retries generic load failures", async () => {

@@ -1,107 +1,41 @@
 import { describe, expect, it } from "vitest";
 
-import { elementRegistry, type TextProps } from "./elements";
-import { renderStructuredRevision, renderStructuredRevisionWithTailwindClasses } from "./render";
-import type { ElementNode, StructuredRevision } from "./types";
+import { renderStructuredRevision } from "./render";
+import type { StructuredRevision } from "./types";
 
-function textDefaults(): TextProps {
-  return elementRegistry.createDefaults("text", 1) as TextProps;
-}
-
-function textNode(overrides: Partial<ElementNode> = {}): ElementNode {
-  return {
-    id: "text1",
-    type: "text",
-    schemaVersion: 1,
-    geometry: { x: 10, y: 20, width: 200, height: 40, zIndex: 1 },
-    props: { ...textDefaults(), text: "Hello <world> & \"friends\"" },
-    animation: null,
-    children: [],
-    ...overrides,
-  };
-}
-
-function revision(elements: ElementNode[], overrides: Partial<StructuredRevision> = {}): StructuredRevision {
-  return {
-    animationRegistryVersion: 1,
-    slides: [{ number: 1, width: 960, height: 540, props: {}, elements }],
-    ...overrides,
-  };
+function revision(overrides: Partial<StructuredRevision> = {}): StructuredRevision {
+  return { slides: [{ number: 1, html: "<p>Hello</p>", css: ".slai-slide p{color:red}" }], ...overrides };
 }
 
 describe("renderStructuredRevision", () => {
   it("produces deterministic output for the same input", () => {
-    const doc = revision([textNode()]);
+    const doc = revision();
     expect(renderStructuredRevision(doc)).toBe(renderStructuredRevision(doc));
   });
 
-  it("escapes user-controlled text content", () => {
-    const html = renderStructuredRevision(revision([textNode()]));
-    expect(html).not.toContain("<world>");
-    expect(html).toContain("&lt;world&gt;");
-    expect(html).toContain("&amp;");
-    expect(html).toContain("&quot;friends&quot;");
+  it("wraps each slide's html in a data-slide-number container", () => {
+    const html = renderStructuredRevision(revision());
+    expect(html).toContain('data-slide-number="1"');
+    expect(html).toContain("<p>Hello</p>");
   });
 
-  it("positions top-level elements absolutely from their geometry", () => {
-    const html = renderStructuredRevision(revision([textNode({ geometry: { x: 15, y: 25, width: 300, height: 50, zIndex: 2 } })]));
-    expect(html).toContain("left:15px");
-    expect(html).toContain("top:25px");
-    expect(html).toContain("width:300px");
-    expect(html).toContain("height:50px");
-    expect(html).toContain("z-index:2");
+  it("includes every slide's css in one stylesheet", () => {
+    const html = renderStructuredRevision(revision());
+    expect(html).toContain("color:red");
   });
 
-  it("renders table and table-cell composition with nested content", () => {
-    const cellText = textNode({ id: "cellText", geometry: { x: null, y: null, width: null, height: null, zIndex: null } });
-    const cell: ElementNode = {
-      id: "cell",
-      type: "table-cell",
-      schemaVersion: 1,
-      geometry: { x: null, y: null, width: null, height: null, zIndex: null },
-      props: elementRegistry.createDefaults("table-cell", 1),
-      animation: null,
-      children: [{ slotKey: "content", orderIndex: 0, element: cellText }],
-    };
-    const table: ElementNode = {
-      id: "table",
-      type: "table",
-      schemaVersion: 1,
-      geometry: { x: 0, y: 0, width: 400, height: 200, zIndex: 0 },
-      props: { rows: 1, columns: 1, borderColor: "#000000", borderWidth: 1 },
-      animation: null,
-      children: [{ slotKey: "r0c0", orderIndex: 0, element: cell }],
-    };
-    const html = renderStructuredRevision(revision([table]));
-    expect(html).toContain("<table");
-    expect(html).toContain("<td");
-    expect(html).toContain("Hello");
-  });
-
-  it("resolves animation references into application-owned class, keyframes, and timing", () => {
-    const html = renderStructuredRevision(revision([textNode({ animation: { key: "fade", props: { durationMs: 300, delayMs: 50 } } })]));
-    expect(html).toContain("slai-anim-fade");
-    expect(html).toContain("@keyframes slai-anim-fade");
-    expect(html).toContain("animation-duration:300ms");
-    expect(html).toContain("animation-delay:50ms");
-    expect(html).toContain('data-slai-anim="true"');
-  });
-
-  it("fails closed with a stable error for an unsupported animation reference instead of substituting one", () => {
-    expect(() => renderStructuredRevision(revision([textNode({ animation: { key: "spin", props: {} } })]))).toThrow(/Unable to render/);
-  });
-
-  it("fails closed with a stable error for an unregistered element type/version", () => {
-    const malformed = textNode({ type: "chart", schemaVersion: 1 });
-    expect(() => renderStructuredRevision(revision([malformed]))).toThrow(/Unable to render/);
+  it("strips unsafe content defensively even if it were somehow stored", () => {
+    const html = renderStructuredRevision(revision({ slides: [{ number: 1, html: '<p onclick="x()">hi</p><script>x()</script>', css: "" }] }));
+    expect(html).not.toContain("onclick");
+    expect(html).not.toContain("x()");
   });
 
   it("fails closed for a revision with no slides", () => {
-    expect(() => renderStructuredRevision({ animationRegistryVersion: 1, slides: [] })).toThrow(/Unable to render/);
+    expect(() => renderStructuredRevision({ slides: [] })).toThrow(/Structured revision has no slides/);
   });
 
   it("includes standalone navigation, keyboard, and print behavior with no remote runtime dependency", () => {
-    const html = renderStructuredRevision(revision([textNode()]));
+    const html = renderStructuredRevision(revision());
     expect(html).toContain("slai-export-nav");
     expect(html).toContain("data-slai-export-previous");
     expect(html).toContain("data-slai-export-next");
@@ -113,101 +47,22 @@ describe("renderStructuredRevision", () => {
   });
 
   it("marks only the first slide active by default so a static open shows one slide", () => {
-    const html = renderStructuredRevision(revision([textNode()]));
-    const activeCount = (html.match(/class="slai-slide"[^>]*data-slai-active="true"/g) ?? []).length;
+    const html = renderStructuredRevision(revision());
+    const activeCount = (html.match(/class="slai-slide" data-slide-number="\d+" data-slai-active="true"/g) ?? []).length;
     expect(activeCount).toBe(1);
     expect(html).toContain('data-slide-number="1" data-slai-active="true"');
   });
 
   it("preserves ordering across multiple slides", () => {
     const doc: StructuredRevision = {
-      animationRegistryVersion: 1,
       slides: [
-        { number: 1, width: 960, height: 540, props: {}, elements: [textNode({ props: { ...textDefaults(), text: "first" } })] },
-        { number: 2, width: 960, height: 540, props: {}, elements: [textNode({ props: { ...textDefaults(), text: "second" } })] },
+        { number: 1, html: "<p>first</p>", css: "" },
+        { number: 2, html: "<p>second</p>", css: "" },
       ],
     };
     const html = renderStructuredRevision(doc);
     expect(html.indexOf("first")).toBeLessThan(html.indexOf("second"));
     expect(html).toContain('data-slide-number="1"');
     expect(html).toContain('data-slide-number="2"');
-  });
-
-  it("falls back to a safe default background for an unsafe slide backgroundColor value", () => {
-    const doc: StructuredRevision = {
-      animationRegistryVersion: 1,
-      slides: [{ number: 1, width: 960, height: 540, props: { backgroundColor: "javascript:alert(1)" }, elements: [] }],
-    };
-    const html = renderStructuredRevision(doc);
-    expect(html).not.toContain("javascript:alert");
-    expect(html).toContain("background:#ffffff");
-  });
-});
-
-// Additive Tailwind-class output mode (add-tailwind-text-styling) - task 4.3.
-describe("renderStructuredRevisionWithTailwindClasses", () => {
-  it("adds a regenerated Tailwind class alongside the existing inline style, never instead of it", () => {
-    const { html, tailwindClasses } = renderStructuredRevisionWithTailwindClasses(revision([textNode()]));
-    // textDefaults() -> fontSize 18 (exactly the "text-lg" scale step), color "#171713" (not in the named palette).
-    expect(html).toContain('class="text-lg text-[color:#171713]"');
-    expect(html).toContain("font-size:18px"); // inline style is still present
-    expect(html).toContain("color:#171713");
-    expect(tailwindClasses.sort()).toEqual(["text-[color:#171713]", "text-lg"]);
-  });
-
-  it("does not add a class attribute to non-text elements or elements with no font-size/color", () => {
-    const shape: ElementNode = {
-      id: "shape1",
-      type: "shape",
-      schemaVersion: 1,
-      geometry: { x: 0, y: 0, width: 100, height: 100, zIndex: 0 },
-      props: elementRegistry.createDefaults("shape", 1),
-      animation: null,
-      children: [],
-    };
-    const { html, tailwindClasses } = renderStructuredRevisionWithTailwindClasses(revision([shape]));
-    expect(tailwindClasses).toEqual([]);
-    expect(html).not.toContain('class="text-');
-  });
-
-  it("resolves Tailwind classes for nested table-cell text content too", () => {
-    const cellText = textNode({ id: "cellText", geometry: { x: null, y: null, width: null, height: null, zIndex: null }, props: { ...textDefaults(), text: "In a cell" } });
-    const cell: ElementNode = {
-      id: "cell",
-      type: "table-cell",
-      schemaVersion: 1,
-      geometry: { x: null, y: null, width: null, height: null, zIndex: null },
-      props: elementRegistry.createDefaults("table-cell", 1),
-      animation: null,
-      children: [{ slotKey: "content", orderIndex: 0, element: cellText }],
-    };
-    const table: ElementNode = {
-      id: "table",
-      type: "table",
-      schemaVersion: 1,
-      geometry: { x: 0, y: 0, width: 400, height: 200, zIndex: 0 },
-      props: { rows: 1, columns: 1, borderColor: "#000000", borderWidth: 1 },
-      animation: null,
-      children: [{ slotKey: "r0c0", orderIndex: 0, element: cell }],
-    };
-    const { tailwindClasses } = renderStructuredRevisionWithTailwindClasses(revision([table]));
-    expect(tailwindClasses).toContain("text-lg");
-  });
-
-  it("dedupes repeated classes across multiple elements", () => {
-    const { tailwindClasses } = renderStructuredRevisionWithTailwindClasses(revision([textNode({ id: "a" }), textNode({ id: "b" })]));
-    expect(tailwindClasses.filter((className) => className === "text-lg")).toHaveLength(1);
-  });
-
-  it("still fails closed with a stable error for a malformed stored structure", () => {
-    const malformed = textNode({ type: "chart", schemaVersion: 1 });
-    expect(() => renderStructuredRevisionWithTailwindClasses(revision([malformed]))).toThrow(/Unable to render/);
-  });
-
-  it("produces output identical (minus the class attribute) to the plain renderer for the general/other-caller path", () => {
-    const plain = renderStructuredRevision(revision([textNode()]));
-    const { html } = renderStructuredRevisionWithTailwindClasses(revision([textNode()]));
-    expect(plain).not.toContain('class="text-lg');
-    expect(html).toContain('class="text-lg');
   });
 });

@@ -765,3 +765,9 @@ Validate all active specifications with:
 ```bash
 openspec validate --all --strict --no-interactive
 ```
+
+## Create image database
+
+```bash
+docker run -d --name slai-mysql -e MYSQL_USER=slai -e MYSQL_PASSWORD=mysql -e MYSQL_ROOT_PASSWORD=mysql -e MYSQL_DATABASE=slai -p 3307:3306 mysql:8.0           
+```
