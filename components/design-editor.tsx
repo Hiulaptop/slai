@@ -4,56 +4,17 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 
 import { useAuth } from "@/lib/auth/auth-context";
-import {
-  animationRegistry,
-  clampToSlide,
-  createBlankDocument,
-  createElementId,
-  createImageElement,
-  createShapeElement,
-  createTableElement,
-  createTextElement,
-  CURRENT_ANIMATION_REGISTRY_VERSION,
-  DEFAULT_ELEMENT_SIZE,
-  isAllowedImageSrc,
-  isShapeElement,
-  isTableElement,
-  isTextElement,
-  renumberSlides,
-  resizeTable,
-  setTableCellContent,
-  tableCellContent,
-  TEXT_STYLE_PRESETS,
-  TEXT_STYLE_TYPES,
-  toWireSlides,
-  type ElementNode,
-  type ShapeProps,
-  type SlideDocument,
-  type TableProps,
-  type TextProps,
-  type TextStyleType,
-} from "@/lib/slides/design-document";
+import { createBlankDocument, renumberSlides, toWireSlides } from "@/lib/slides/design-document";
 import type { ApiErrorBody, DesignSaveRequest, PresentationDetail } from "@/lib/types";
-import { DesignCanvas, type CanvasTool } from "@/components/design-canvas";
-
-const MAX_HISTORY = 50;
-const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
-const TOOLS: { tool: CanvasTool; label: string }[] = [
-  { tool: "select", label: "Select" },
-  { tool: "text", label: "Text" },
-  { tool: "rectangle", label: "Rectangle" },
-  { tool: "ellipse", label: "Ellipse" },
-  { tool: "line", label: "Line" },
-  { tool: "image", label: "Image" },
-  { tool: "table", label: "Table" },
-];
+import type { SlideDocument } from "@/modules/slides/domain/structured/types";
+import { SlideHtmlCanvas, type SlideHtmlCanvasHandle } from "@/components/slide-html-canvas";
 
 type LoadState = "loading" | "ready" | "not-found" | "error" | "unavailable";
 type SaveState = "idle" | "saving" | "error" | "conflict";
 
 export function DesignEditor({ generationId }: { generationId: string }) {
   const { authFetch } = useAuth();
-  const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const canvasRef = useRef<SlideHtmlCanvasHandle | null>(null);
 
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [loadError, setLoadError] = useState("");
@@ -64,11 +25,7 @@ export function DesignEditor({ generationId }: { generationId: string }) {
   const [slides, setSlides] = useState<SlideDocument[]>([]);
   const [revisionNumber, setRevisionNumber] = useState<number | null>(null);
   const [selectedSlideNumber, setSelectedSlideNumber] = useState(1);
-  const [selectedElementId, setSelectedElementId] = useState<string | null>(null);
-  const [selectedCell, setSelectedCell] = useState<{ row: number; column: number } | null>(null);
-  const [tool, setTool] = useState<CanvasTool>("select");
 
-  const [history, setHistory] = useState<SlideDocument[][]>([]);
   const [dirty, setDirty] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [saveError, setSaveError] = useState("");
@@ -99,8 +56,6 @@ export function DesignEditor({ generationId }: { generationId: string }) {
         setSlides(body.document.slides.length ? body.document.slides : createBlankDocument(1));
         setRevisionNumber(body.revisionNumber);
         setSelectedSlideNumber(1);
-        setSelectedElementId(null);
-        setHistory([]);
         setDirty(false);
         setLoadState("ready");
       })
@@ -121,107 +76,27 @@ export function DesignEditor({ generationId }: { generationId: string }) {
     setReloadKey((key) => key + 1);
   }
 
-  function applyMutation(next: SlideDocument[]) {
-    setHistory((current) => [...current, slides].slice(-MAX_HISTORY));
-    setSlides(next);
-    setDirty(true);
-  }
-
-  function undo() {
-    setHistory((current) => {
-      if (!current.length) return current;
-      const previous = current[current.length - 1];
-      setSlides(previous);
-      setDirty(true);
-      return current.slice(0, -1);
-    });
-  }
-
   const activeSlide = slides.find((slide) => slide.number === selectedSlideNumber) ?? slides[0];
-  const layerOrder = activeSlide ? [...activeSlide.elements].sort((a, b) => (a.geometry.zIndex ?? 0) - (b.geometry.zIndex ?? 0)) : [];
-  const selectedLayerIndex = selectedElementId ? layerOrder.findIndex((element) => element.id === selectedElementId) : -1;
-  const canMoveForward = selectedLayerIndex >= 0 && selectedLayerIndex < layerOrder.length - 1;
-  const canMoveBackward = selectedLayerIndex > 0;
-  const selectedElement = activeSlide?.elements.find((element) => element.id === selectedElementId) ?? null;
 
-  function commitElements(elements: ElementNode[]) {
+  function commitSlide(html: string, css: string) {
     if (!activeSlide) return;
-    applyMutation(slides.map((slide) => (slide.number === activeSlide.number ? { ...slide, elements } : slide)));
-  }
-
-  function updateSelectedElement(updater: (element: ElementNode) => ElementNode) {
-    if (!activeSlide || !selectedElementId) return;
-    commitElements(activeSlide.elements.map((element) => (element.id === selectedElementId ? updater(element) : element)));
-  }
-
-  function createElement(toolKind: CanvasTool, x: number, y: number) {
-    if (!activeSlide || toolKind === "select") return;
-    if (toolKind === "image") {
-      imageInputRef.current?.click();
-      setTool("select");
-      return;
-    }
-    const zIndex = (activeSlide.elements.at(-1)?.geometry.zIndex ?? 0) + 1;
-    const element =
-      toolKind === "text"
-        ? createTextElement(x, y, zIndex)
-        : toolKind === "table"
-          ? createTableElement(2, 2, x, y, zIndex)
-          : createShapeElement(toolKind, x, y, zIndex);
-    commitElements([...activeSlide.elements, element]);
-    setSelectedElementId(element.id);
-    setSelectedCell(null);
-    setTool("select");
-  }
-
-  function handleImageSelected(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file || !activeSlide) return;
-    if (!["image/png", "image/jpeg", "image/webp"].includes(file.type) || file.size > MAX_IMAGE_BYTES) {
-      setSaveError("Images must be PNG, JPEG, or WebP and no larger than 5 MiB.");
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const src = String(reader.result ?? "");
-      if (!isAllowedImageSrc(src)) return;
-      const size = DEFAULT_ELEMENT_SIZE.image;
-      const bounds = clampToSlide({ x: (960 - size.width) / 2, y: (540 - size.height) / 2, width: size.width, height: size.height });
-      const zIndex = (activeSlide.elements.at(-1)?.geometry.zIndex ?? 0) + 1;
-      const element = createImageElement(src, file.name, bounds.x, bounds.y, zIndex);
-      commitElements([...activeSlide.elements, element]);
-      setSelectedElementId(element.id);
-    };
-    reader.readAsDataURL(file);
-  }
-
-  function moveLayer(direction: "forward" | "backward") {
-    if (!activeSlide || !selectedElementId) return;
-    const elements = [...activeSlide.elements].sort((a, b) => (a.geometry.zIndex ?? 0) - (b.geometry.zIndex ?? 0));
-    const index = elements.findIndex((element) => element.id === selectedElementId);
-    const targetIndex = direction === "forward" ? index + 1 : index - 1;
-    if (index < 0 || targetIndex < 0 || targetIndex >= elements.length) return;
-    const swapped = [...elements];
-    const currentZ = swapped[index].geometry.zIndex;
-    swapped[index] = { ...swapped[index], geometry: { ...swapped[index].geometry, zIndex: swapped[targetIndex].geometry.zIndex } };
-    swapped[targetIndex] = { ...swapped[targetIndex], geometry: { ...swapped[targetIndex].geometry, zIndex: currentZ } };
-    commitElements(swapped);
+    setSlides((current) => current.map((slide) => (slide.number === activeSlide.number ? { ...slide, html, css } : slide)));
+    setDirty(true);
   }
 
   function addSlide() {
     const next = renumberSlides([...slides, ...createBlankDocument(1).map((slide) => ({ ...slide, number: slides.length + 1 }))]);
-    applyMutation(next);
+    setSlides(next);
+    setDirty(true);
     setSelectedSlideNumber(next.length);
-    setSelectedElementId(null);
   }
 
   function deleteSlide(number: number) {
     if (slides.length <= 1) return;
     const next = renumberSlides(slides.filter((slide) => slide.number !== number));
-    applyMutation(next);
+    setSlides(next);
+    setDirty(true);
     setSelectedSlideNumber((current) => (current === number ? Math.max(1, current - 1) : current > number ? current - 1 : current));
-    setSelectedElementId(null);
   }
 
   function moveSlide(number: number, direction: "up" | "down") {
@@ -231,14 +106,20 @@ export function DesignEditor({ generationId }: { generationId: string }) {
     const reordered = [...slides];
     [reordered[index], reordered[targetIndex]] = [reordered[targetIndex], reordered[index]];
     const next = renumberSlides(reordered);
-    applyMutation(next);
+    setSlides(next);
+    setDirty(true);
     setSelectedSlideNumber(direction === "up" ? number - 1 : number + 1);
   }
 
   async function save(): Promise<boolean> {
+    if (!activeSlide) return false;
+    const serialized = canvasRef.current?.serialize();
+    if (!serialized) return false;
+    const nextSlides = slides.map((slide) => (slide.number === activeSlide.number ? { ...slide, html: serialized.html, css: serialized.css } : slide));
+
     setSaveState("saving");
     setSaveError("");
-    const body: DesignSaveRequest = { generationId, slides: toWireSlides(slides), expectedRevision: revisionNumber };
+    const body: DesignSaveRequest = { generationId, slides: toWireSlides(nextSlides), expectedRevision: revisionNumber };
     try {
       const response = await authFetch("/api/slides/design/save", {
         method: "PATCH",
@@ -323,9 +204,6 @@ export function DesignEditor({ generationId }: { generationId: string }) {
           />
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <button className="ui-button ui-button-secondary" disabled={!history.length} onClick={undo} type="button">
-            Undo
-          </button>
           <button className="ui-button ui-button-secondary" disabled={downloading} onClick={() => void download()} type="button">
             {downloading ? "Preparing..." : "Download HTML"}
           </button>
@@ -355,56 +233,25 @@ export function DesignEditor({ generationId }: { generationId: string }) {
         </p>
       ) : null}
 
-      <input accept="image/png,image/jpeg,image/webp" className="hidden" onChange={handleImageSelected} ref={imageInputRef} type="file" />
-
-      <div className="grid gap-5 xl:grid-cols-[10rem_minmax(0,1fr)_16rem]">
-        <nav className="order-3 flex gap-2 overflow-x-auto pb-2 xl:order-1 xl:flex-col xl:overflow-visible" aria-label="Tools">
-          {TOOLS.map(({ tool: toolOption, label }) => (
-            <button
-              aria-pressed={tool === toolOption}
-              className={`rounded-xl border px-3 py-2 text-left text-sm ${tool === toolOption ? "border-[var(--accent)] bg-blue-50 text-[var(--accent)]" : "border-[var(--line)] bg-[var(--surface)]"}`}
-              key={toolOption}
-              onClick={() => setTool(toolOption)}
-              type="button"
-            >
-              {label}
-            </button>
-          ))}
-          <div className="mt-2 flex gap-2 xl:flex-col">
-            <button className="ui-button ui-button-secondary" disabled={!canMoveForward} onClick={() => moveLayer("forward")} type="button">
-              Bring forward
-            </button>
-            <button className="ui-button ui-button-secondary" disabled={!canMoveBackward} onClick={() => moveLayer("backward")} type="button">
-              Send backward
-            </button>
-          </div>
-        </nav>
-
-        <section className="order-1 min-w-0 xl:order-2">
-          <DesignCanvas
-            slide={activeSlide}
-            tool={tool}
-            selectedElementId={selectedElementId}
-            onSelectElement={(id) => {
-              setSelectedElementId(id);
-              setSelectedCell(null);
+      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_16rem]">
+        <section className="order-1 min-w-0">
+          <SlideHtmlCanvas
+            css={activeSlide.css}
+            html={activeSlide.html}
+            key={activeSlide.number}
+            onDirtyChange={(isDirty) => {
+              if (isDirty) {
+                const serialized = canvasRef.current?.serialize();
+                if (serialized) commitSlide(serialized.html, serialized.css);
+              }
             }}
-            onCommitElements={commitElements}
-            onCreateElement={createElement}
+            ref={canvasRef}
+            saveState={saveState === "saving" ? "saving" : dirty ? "dirty" : "saved"}
           />
         </section>
 
-        <div className="order-4 flex flex-col gap-4 xl:order-3">
-          {selectedElement ? (
-            <ElementProperties
-              element={selectedElement}
-              selectedCell={selectedCell}
-              onSelectCell={setSelectedCell}
-              onChange={updateSelectedElement}
-            />
-          ) : null}
-
-          <nav className="flex gap-2 overflow-x-auto pb-2 xl:max-h-[50vh] xl:flex-col xl:overflow-y-auto" aria-label="Slides">
+        <div className="order-2 flex flex-col gap-4">
+          <nav className="flex gap-2 overflow-x-auto pb-2 xl:max-h-[70vh] xl:flex-col xl:overflow-y-auto" aria-label="Slides">
             {slides.map((slide, index) => (
               <div
                 className={`min-w-32 rounded-xl border p-3 text-left text-sm ${slide.number === activeSlide.number ? "border-[var(--accent)] bg-blue-50 text-[var(--accent)]" : "border-[var(--line)] bg-[var(--surface)]"}`}
@@ -413,15 +260,11 @@ export function DesignEditor({ generationId }: { generationId: string }) {
                 <button
                   aria-current={slide.number === activeSlide.number ? "page" : undefined}
                   className="block w-full text-left"
-                  onClick={() => {
-                    setSelectedSlideNumber(slide.number);
-                    setSelectedElementId(null);
-                    setSelectedCell(null);
-                  }}
+                  onClick={() => setSelectedSlideNumber(slide.number)}
                   type="button"
                 >
                   <span className="font-mono text-xs">{String(index + 1).padStart(2, "0")}</span>
-                  <span className="mt-1 block truncate">{slide.elements.length} element{slide.elements.length === 1 ? "" : "s"}</span>
+                  <span className="mt-1 block truncate">Slide {slide.number}</span>
                 </button>
                 <div className="mt-2 flex gap-1">
                   <button aria-label={`Move slide ${slide.number} up`} className="text-xs underline" disabled={index === 0} onClick={() => moveSlide(slide.number, "up")} type="button">
@@ -443,346 +286,6 @@ export function DesignEditor({ generationId }: { generationId: string }) {
         </div>
       </div>
     </main>
-  );
-}
-
-function ElementProperties({
-  element,
-  selectedCell,
-  onSelectCell,
-  onChange,
-}: {
-  element: ElementNode;
-  selectedCell: { row: number; column: number } | null;
-  onSelectCell(cell: { row: number; column: number } | null): void;
-  onChange(updater: (element: ElementNode) => ElementNode): void;
-}) {
-  const animationKeys = animationRegistry.listKeys(CURRENT_ANIMATION_REGISTRY_VERSION);
-
-  return (
-    <section aria-label="Element properties" className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4">
-      <h2 className="font-mono text-xs font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">Properties</h2>
-      <div className="mt-3 space-y-4">
-        {isTextElement(element) ? (
-          <TextProperties elementId={element.id} props={element.props} onChange={(patch) => onChange((el) => ({ ...el, props: { ...(el.props as TextProps), ...patch } }))} />
-        ) : null}
-        {isShapeElement(element) ? <ShapeProperties props={element.props} onChange={(patch) => onChange((el) => ({ ...el, props: { ...(el.props as ShapeProps), ...patch } }))} /> : null}
-        {isTableElement(element) ? (
-          <TableProperties
-            element={element}
-            selectedCell={selectedCell}
-            onSelectCell={onSelectCell}
-            onChange={onChange}
-          />
-        ) : null}
-        <AnimationProperties element={element} keys={animationKeys} onChange={onChange} />
-      </div>
-    </section>
-  );
-}
-
-function ToggleButton({ active, label, onClick }: { active: boolean; label: string; onClick(): void }) {
-  return (
-    <button
-      aria-pressed={active}
-      className={`rounded-lg border px-2.5 py-1.5 text-xs font-semibold ${active ? "border-[var(--accent)] bg-blue-50 text-[var(--accent)]" : "border-[var(--line)] bg-white"}`}
-      onClick={onClick}
-      type="button"
-    >
-      {label}
-    </button>
-  );
-}
-
-// Live-editing pattern for continuous controls (font-size slider, color
-// picker): every input tick writes straight to the selected element's DOM
-// node (via the `data-slai-element-id` attribute design-canvas.tsx sets on
-// it) rather than calling `onChange`/`applyMutation` per tick, so a drag
-// never pushes an undo-history entry or triggers a state re-render until
-// the gesture ends - matching DesignCanvas's existing draftElements/
-// onCommitElements pattern for position/size dragging. This is a plain CSS
-// custom-property write; it never resolves or generates a Tailwind class,
-// so it can never reach the compiler in
-// modules/slides/infrastructure/structured/tailwind-compiler.ts, which only
-// runs from the render/download route handlers.
-function writeLiveStyleVar(elementId: string, variable: string, value: string) {
-  const node = document.querySelector<HTMLElement>(`[data-slai-element-id="${CSS.escape(elementId)}"]`);
-  node?.style.setProperty(variable, value);
-}
-
-function TextProperties({ elementId, props, onChange }: { elementId: string; props: TextProps; onChange(patch: Partial<TextProps>): void }) {
-  // Resync the drag-local draft from committed props (e.g. undo/redo, or
-  // selecting a different element) without an effect - adjusting state
-  // during render is the pattern React recommends for this, and avoids the
-  // set-state-in-effect lint rule that a `useEffect([props.fontSize])` would
-  // trip (see https://react.dev/learn/you-might-not-need-an-effect).
-  const [draftFontSize, setDraftFontSize] = useState(props.fontSize);
-  const [lastCommittedFontSize, setLastCommittedFontSize] = useState(props.fontSize);
-  if (props.fontSize !== lastCommittedFontSize) {
-    setLastCommittedFontSize(props.fontSize);
-    setDraftFontSize(props.fontSize);
-  }
-
-  const [draftColor, setDraftColor] = useState(props.color);
-  const [lastCommittedColor, setLastCommittedColor] = useState(props.color);
-  if (props.color !== lastCommittedColor) {
-    setLastCommittedColor(props.color);
-    setDraftColor(props.color);
-  }
-
-  return (
-    <div className="space-y-3">
-      <label className="block text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-        Style
-        <select
-          className="mt-1 w-full rounded-lg border border-[var(--line)] px-2 py-1.5 text-sm"
-          onChange={(event) => {
-            const styleType = event.target.value as TextStyleType;
-            const preset = TEXT_STYLE_PRESETS[styleType];
-            onChange({ styleType, fontSize: preset.fontSize, fontWeight: preset.fontWeight });
-          }}
-          value={props.styleType}
-        >
-          {TEXT_STYLE_TYPES.map((type) => (
-            <option key={type} value={type}>
-              {type}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="block text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-        Font size ({draftFontSize}px)
-        <input
-          className="mt-1 w-full"
-          max={400}
-          min={1}
-          onBlur={() => onChange({ fontSize: draftFontSize })}
-          onChange={(event) => {
-            const value = Number(event.target.value);
-            setDraftFontSize(value);
-            writeLiveStyleVar(elementId, "--slai-font-size", `${value}px`);
-          }}
-          onKeyUp={() => onChange({ fontSize: draftFontSize })}
-          onPointerUp={() => onChange({ fontSize: draftFontSize })}
-          type="range"
-          value={draftFontSize}
-        />
-      </label>
-      <div className="flex flex-wrap gap-1.5">
-        <ToggleButton active={props.bold} label="Bold" onClick={() => onChange({ bold: !props.bold })} />
-        <ToggleButton active={props.italic} label="Italic" onClick={() => onChange({ italic: !props.italic })} />
-        <ToggleButton active={props.underline} label="Underline" onClick={() => onChange({ underline: !props.underline })} />
-        <ToggleButton active={props.list === "bullet"} label="Bullets" onClick={() => onChange({ list: props.list === "bullet" ? "none" : "bullet" })} />
-      </div>
-      <div className="flex gap-1.5">
-        <ToggleButton active={props.align === "left"} label="Left" onClick={() => onChange({ align: "left" })} />
-        <ToggleButton active={props.align === "center"} label="Center" onClick={() => onChange({ align: "center" })} />
-        <ToggleButton active={props.align === "right"} label="Right" onClick={() => onChange({ align: "right" })} />
-      </div>
-      <label className="block text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-        Text color
-        <input
-          className="mt-1 h-9 w-full rounded-lg border border-[var(--line)]"
-          onBlur={() => onChange({ color: draftColor })}
-          onChange={(event) => {
-            const value = event.target.value;
-            setDraftColor(value);
-            writeLiveStyleVar(elementId, "--slai-text-color", value);
-          }}
-          type="color"
-          value={draftColor}
-        />
-      </label>
-      <label className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-        <input checked={props.backgroundColor !== null} onChange={(event) => onChange({ backgroundColor: event.target.checked ? "#ffffff" : null })} type="checkbox" />
-        Background fill
-      </label>
-      {props.backgroundColor !== null ? (
-        <input className="h-9 w-full rounded-lg border border-[var(--line)]" onChange={(event) => onChange({ backgroundColor: event.target.value })} type="color" value={props.backgroundColor} />
-      ) : null}
-    </div>
-  );
-}
-
-function ShapeProperties({ props, onChange }: { props: ShapeProps; onChange(patch: Partial<ShapeProps>): void }) {
-  return (
-    <div className="space-y-3">
-      <label className="block text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-        Fill
-        <input className="mt-1 h-9 w-full rounded-lg border border-[var(--line)]" onChange={(event) => onChange({ fill: event.target.value })} type="color" value={props.fill} />
-      </label>
-      <label className="block text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-        Stroke
-        <input className="mt-1 h-9 w-full rounded-lg border border-[var(--line)]" onChange={(event) => onChange({ stroke: event.target.value })} type="color" value={props.stroke} />
-      </label>
-      <label className="block text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-        Stroke width
-        <input
-          className="mt-1 w-full rounded-lg border border-[var(--line)] px-2 py-1.5 text-sm"
-          max={64}
-          min={0}
-          onChange={(event) => onChange({ strokeWidth: Number(event.target.value) || 0 })}
-          type="number"
-          value={props.strokeWidth}
-        />
-      </label>
-    </div>
-  );
-}
-
-function TableProperties({
-  element,
-  selectedCell,
-  onSelectCell,
-  onChange,
-}: {
-  element: ElementNode;
-  selectedCell: { row: number; column: number } | null;
-  onSelectCell(cell: { row: number; column: number } | null): void;
-  onChange(updater: (element: ElementNode) => ElementNode): void;
-}) {
-  const props = element.props as TableProps;
-  const cellContent = selectedCell ? tableCellContent(element, selectedCell.row, selectedCell.column) : null;
-  const cellText = cellContent && isTextElement(cellContent) ? cellContent.props.text : "";
-
-  return (
-    <div className="space-y-3">
-      <div className="grid grid-cols-2 gap-2">
-        <label className="block text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-          Rows
-          <input
-            className="mt-1 w-full rounded-lg border border-[var(--line)] px-2 py-1.5 text-sm"
-            max={50}
-            min={1}
-            onChange={(event) => onChange((el) => resizeTable(el, Math.max(1, Number(event.target.value) || 1), props.columns))}
-            type="number"
-            value={props.rows}
-          />
-        </label>
-        <label className="block text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-          Columns
-          <input
-            className="mt-1 w-full rounded-lg border border-[var(--line)] px-2 py-1.5 text-sm"
-            max={50}
-            min={1}
-            onChange={(event) => onChange((el) => resizeTable(el, props.rows, Math.max(1, Number(event.target.value) || 1)))}
-            type="number"
-            value={props.columns}
-          />
-        </label>
-      </div>
-      <label className="block text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-        Border color
-        <input className="mt-1 h-9 w-full rounded-lg border border-[var(--line)]" onChange={(event) => onChange((el) => ({ ...el, props: { ...(el.props as TableProps), borderColor: event.target.value } }))} type="color" value={props.borderColor} />
-      </label>
-
-      <div>
-        <p className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">Cells</p>
-        <div className="mt-1 grid gap-1" style={{ gridTemplateColumns: `repeat(${props.columns}, minmax(0, 1fr))` }}>
-          {Array.from({ length: props.rows }, (_, row) =>
-            Array.from({ length: props.columns }, (_, column) => (
-              <button
-                aria-label={`Edit cell row ${row + 1} column ${column + 1}`}
-                aria-pressed={selectedCell?.row === row && selectedCell?.column === column}
-                className={`rounded border px-2 py-1 text-xs ${selectedCell?.row === row && selectedCell?.column === column ? "border-[var(--accent)] bg-blue-50" : "border-[var(--line)] bg-white"}`}
-                key={`${row}-${column}`}
-                onClick={() => onSelectCell({ row, column })}
-                type="button"
-              >
-                {row + 1},{column + 1}
-              </button>
-            )),
-          )}
-        </div>
-      </div>
-
-      {selectedCell ? (
-        <div className="rounded-xl border border-[var(--line)] bg-white p-3">
-          <label className="block text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-            Cell text (row {selectedCell.row + 1}, column {selectedCell.column + 1})
-            <textarea
-              className="mt-1 min-h-16 w-full resize-y rounded-lg border border-[var(--line)] px-2 py-1.5 text-sm"
-              onChange={(event) => {
-                const text = event.target.value;
-                onChange((el) => {
-                  if (!text) return setTableCellContent(el, selectedCell.row, selectedCell.column, null);
-                  const existing = tableCellContent(el, selectedCell.row, selectedCell.column);
-                  const content: ElementNode =
-                    existing && isTextElement(existing)
-                      ? { ...existing, props: { ...existing.props, text } }
-                      : {
-                          id: createElementId(),
-                          type: "text",
-                          schemaVersion: 1,
-                          geometry: { x: null, y: null, width: null, height: null, zIndex: null },
-                          props: { text, styleType: "body", fontSize: 16, fontWeight: 400, color: "#171713", backgroundColor: null, align: "left", bold: false, italic: false, underline: false, list: "none" },
-                          animation: null,
-                          children: [],
-                        };
-                  return setTableCellContent(el, selectedCell.row, selectedCell.column, content);
-                });
-              }}
-              value={cellText}
-            />
-          </label>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function AnimationProperties({ element, keys, onChange }: { element: ElementNode; keys: string[]; onChange(updater: (element: ElementNode) => ElementNode): void }) {
-  const animation = element.animation;
-  const durationMs = typeof animation?.props.durationMs === "number" ? animation.props.durationMs : 500;
-  const delayMs = typeof animation?.props.delayMs === "number" ? animation.props.delayMs : 0;
-
-  return (
-    <div className="space-y-3 border-t border-[var(--line)] pt-3">
-      <label className="block text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-        Entrance animation
-        <select
-          className="mt-1 w-full rounded-lg border border-[var(--line)] px-2 py-1.5 text-sm"
-          onChange={(event) => {
-            const key = event.target.value;
-            onChange((el) => ({ ...el, animation: key === "none" ? null : { key, props: { durationMs, delayMs } } }));
-          }}
-          value={animation?.key ?? "none"}
-        >
-          <option value="none">None</option>
-          {keys.map((key) => (
-            <option key={key} value={key}>
-              {key}
-            </option>
-          ))}
-        </select>
-      </label>
-      {animation ? (
-        <div className="grid grid-cols-2 gap-2">
-          <label className="block text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-            Duration (ms)
-            <input
-              className="mt-1 w-full rounded-lg border border-[var(--line)] px-2 py-1.5 text-sm"
-              max={10000}
-              min={0}
-              onChange={(event) => onChange((el) => ({ ...el, animation: el.animation ? { ...el.animation, props: { ...el.animation.props, durationMs: Number(event.target.value) || 0 } } : null }))}
-              type="number"
-              value={durationMs}
-            />
-          </label>
-          <label className="block text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-            Delay (ms)
-            <input
-              className="mt-1 w-full rounded-lg border border-[var(--line)] px-2 py-1.5 text-sm"
-              max={10000}
-              min={0}
-              onChange={(event) => onChange((el) => ({ ...el, animation: el.animation ? { ...el.animation, props: { ...el.animation.props, delayMs: Number(event.target.value) || 0 } } : null }))}
-              type="number"
-              value={delayMs}
-            />
-          </label>
-        </div>
-      ) : null}
-    </div>
   );
 }
 

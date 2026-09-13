@@ -35,6 +35,10 @@ afterEach(async () => {
   }
 });
 
+// Both are convertible now: the per-slide-HTML model only needs the
+// `.slai-slide[data-slide-number]` wrapper the legacy whole-document HTML
+// pipeline always used, regardless of whether the content inside came from
+// the old marker-based design editor or freeform AI-authored markup.
 const LEGACY_DESIGN_HTML =
   '<!doctype html><html><body><div class="slai-slide" data-slide-number="1">' +
   '<div data-slai-el="t1" data-slai-el-type="text" data-slai-font-size="24" data-slai-color="#171713" data-slai-align="left" style="position:absolute;left:10px;top:10px;width:200px;height:40px;z-index:0;">Legacy title</div>' +
@@ -42,6 +46,9 @@ const LEGACY_DESIGN_HTML =
 
 const FREEFORM_AI_HTML =
   '<!doctype html><html><body><div class="slai-slide" data-slide-number="1"><h1 style="color:red">Quarterly results</h1></div></body></html>';
+
+// No `.slai-slide` markers at all - nothing to extract per slide.
+const NO_MARKERS_HTML = "<!doctype html><html><body><p>plain document with no slide markers</p></body></html>";
 
 async function createLegacyGeneration(html: string): Promise<string> {
   const generation = await db.slideGeneration.create({
@@ -71,31 +78,33 @@ async function createLegacyGeneration(html: string): Promise<string> {
 }
 
 describe("legacy migration tooling (integration)", () => {
-  it("classifies design-marker HTML as convertible and freeform HTML as unsupported, without writing anything", async () => {
+  it("classifies both marker-based and freeform legacy HTML as convertible, and markerless HTML as unsupported, without writing anything", async () => {
     if (!databaseAvailable) return;
-    const convertibleId = await createLegacyGeneration(LEGACY_DESIGN_HTML);
-    const unsupportedId = await createLegacyGeneration(FREEFORM_AI_HTML);
+    const markerId = await createLegacyGeneration(LEGACY_DESIGN_HTML);
+    const freeformId = await createLegacyGeneration(FREEFORM_AI_HTML);
+    const unsupportedId = await createLegacyGeneration(NO_MARKERS_HTML);
 
     const results = await classifyLegacyGenerations(db);
 
-    expect(results.find((r) => r.generationId === convertibleId)).toMatchObject({ disposition: "convertible", slideCount: 1 });
+    expect(results.find((r) => r.generationId === markerId)).toMatchObject({ disposition: "convertible", slideCount: 1 });
+    expect(results.find((r) => r.generationId === freeformId)).toMatchObject({ disposition: "convertible", slideCount: 1 });
     expect(results.find((r) => r.generationId === unsupportedId)).toMatchObject({ disposition: "unsupported" });
 
-    // Dry-run: no structured rows were created by classification alone.
-    const nodeRows = await db.slideElementNode.findMany({ where: { slideGenerationId: { in: [convertibleId, unsupportedId] } } });
-    expect(nodeRows).toHaveLength(0);
+    // Dry-run: no snapshot rows were created by classification alone.
+    const snapshotRows = await db.slideSnapshot.findMany({ where: { slideGenerationId: { in: [markerId, freeformId, unsupportedId] } } });
+    expect(snapshotRows).toHaveLength(0);
   });
 
   it("backfills a convertible generation into a verified structured revision, and re-classifies it as already-structured", async () => {
     if (!databaseAvailable) return;
-    const generationId = await createLegacyGeneration(LEGACY_DESIGN_HTML);
+    const generationId = await createLegacyGeneration(FREEFORM_AI_HTML);
 
     const firstRun = await backfillLegacyGenerations(db);
     expect(firstRun.find((r) => r.generationId === generationId)).toMatchObject({ status: "migrated" });
 
-    const nodeRows = await db.slideElementNode.findMany({ where: { slideGenerationId: generationId } });
-    expect(nodeRows).toHaveLength(1);
-    expect(nodeRows[0].type).toBe("text");
+    const snapshotRows = await db.slideSnapshot.findMany({ where: { slideGenerationId: generationId } });
+    expect(snapshotRows).toHaveLength(1);
+    expect(snapshotRows[0].html).toContain("Quarterly results");
 
     // Idempotent: re-running does not touch the now-structured generation.
     const secondRun = await backfillLegacyGenerations(db);
@@ -104,24 +113,24 @@ describe("legacy migration tooling (integration)", () => {
     const reclassified = await classifyLegacyGenerations(db);
     expect(reclassified.find((r) => r.generationId === generationId)).toMatchObject({ disposition: "already-structured" });
 
-    const nodeRowsAfterRerun = await db.slideElementNode.findMany({ where: { slideGenerationId: generationId } });
-    expect(nodeRowsAfterRerun).toHaveLength(1); // no duplicate row from the second run
+    const snapshotRowsAfterRerun = await db.slideSnapshot.findMany({ where: { slideGenerationId: generationId } });
+    expect(snapshotRowsAfterRerun).toHaveLength(1); // no duplicate row from the second run
   });
 
   it("skips unsupported generations during backfill without writing structured rows", async () => {
     if (!databaseAvailable) return;
-    const generationId = await createLegacyGeneration(FREEFORM_AI_HTML);
+    const generationId = await createLegacyGeneration(NO_MARKERS_HTML);
 
     const results = await backfillLegacyGenerations(db);
     expect(results.find((r) => r.generationId === generationId)).toMatchObject({ status: "skipped-unsupported" });
 
-    const nodeRows = await db.slideElementNode.findMany({ where: { slideGenerationId: generationId } });
-    expect(nodeRows).toHaveLength(0);
+    const snapshotRows = await db.slideSnapshot.findMany({ where: { slideGenerationId: generationId } });
+    expect(snapshotRows).toHaveLength(0);
   });
 
   it("requires an explicit disposition for every unsupported record before building the audit report", async () => {
     if (!databaseAvailable) return;
-    const unsupportedId = await createLegacyGeneration(FREEFORM_AI_HTML);
+    const unsupportedId = await createLegacyGeneration(NO_MARKERS_HTML);
     const classifications = await classifyLegacyGenerations(db);
     const backfillResults = await backfillLegacyGenerations(db);
 

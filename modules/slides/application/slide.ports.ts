@@ -70,9 +70,9 @@ export interface SlideRepository {
   // presentation (see design.md); the methods above remain only for
   // generations created before this change.
   loadCurrentStructuredRevision(generation: StoredPresentation): Promise<StructuredRevision | null>;
-  completeStructuredGeneration(id: string, document: FlattenedDocument, animationRegistryVersion: number, response: AIResponse): Promise<StoredPresentation>;
-  saveStructuredDesign(input: { generation: StoredPresentation; document: FlattenedDocument; animationRegistryVersion: number; expectedRevision: number | null }): Promise<StoredPresentation | null>;
-  appendStructuredEdit(input: { generation: StoredPresentation; replacements: FlattenedDocument; animationRegistryVersion: number; editRequest: unknown }): Promise<StoredPresentation | null>;
+  completeStructuredGeneration(id: string, document: FlattenedDocument, response: AIResponse): Promise<StoredPresentation>;
+  saveStructuredDesign(input: { generation: StoredPresentation; document: FlattenedDocument; expectedRevision: number | null }): Promise<StoredPresentation | null>;
+  appendStructuredEdit(input: { generation: StoredPresentation; replacements: FlattenedDocument; editRequest: unknown }): Promise<StoredPresentation | null>;
   undoStructured(generation: StoredPresentation, slideNumber: number): Promise<StoredPresentation | null>;
   undoableStructuredSlideNumbers(generation: StoredPresentation): Promise<number[]>;
 }

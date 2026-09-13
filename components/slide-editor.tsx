@@ -1,10 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { useAuth } from "@/lib/auth/auth-context";
-import { renderStructuredRevision } from "@/modules/slides/domain/structured/render";
+import { SlideHtmlCanvas, type SlideHtmlCanvasHandle } from "@/components/slide-html-canvas";
 import type { ApiErrorBody, PresentationDetail, SlideDocument, SlideEdit } from "@/lib/types";
 
 type LoadState = "loading" | "ready" | "not-found" | "error";
@@ -12,10 +12,12 @@ type Mutation = "edit" | "undo" | null;
 
 export function SlideEditor({ generationId }: { generationId: string }) {
   const { authFetch } = useAuth();
+  const canvasRef = useRef<SlideHtmlCanvasHandle | null>(null);
   const [detail, setDetail] = useState<PresentationDetail | null>(null);
   const [slides, setSlides] = useState<SlideDocument[]>([]);
   const [selectedNumber, setSelectedNumber] = useState(1);
   const [drafts, setDrafts] = useState<Record<number, string>>({});
+  const [canvasEdits, setCanvasEdits] = useState<Record<number, { html: string; css: string }>>({});
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [loadError, setLoadError] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
@@ -67,13 +69,18 @@ export function SlideEditor({ generationId }: { generationId: string }) {
   }
 
   async function sendFeedback() {
-    const edits: SlideEdit[] = Object.entries(drafts)
-      .map(([slideNumber, prompt]) => ({ slideNumber: Number(slideNumber), prompt: prompt.trim() }))
-      .filter((edit) => edit.prompt.length > 0)
+    const numbers = new Set([...Object.keys(drafts).map(Number), ...Object.keys(canvasEdits).map(Number)]);
+    const edits: SlideEdit[] = Array.from(numbers)
+      .map((slideNumber): SlideEdit => {
+        const prompt = drafts[slideNumber]?.trim();
+        const canvasEdit = canvasEdits[slideNumber];
+        return { slideNumber, ...(prompt ? { prompt } : {}), ...(canvasEdit ? { html: canvasEdit.html, css: canvasEdit.css } : {}) };
+      })
+      .filter((edit) => Boolean(edit.prompt) || typeof edit.html === "string")
       .sort((left, right) => left.slideNumber - right.slideNumber);
 
     if (!edits.length) {
-      setMutationError("Enter feedback for at least one slide.");
+      setMutationError("Enter feedback, or edit the slide directly, for at least one slide.");
       return;
     }
 
@@ -88,9 +95,15 @@ export function SlideEditor({ generationId }: { generationId: string }) {
       if (!response.ok) throw new Error(await responseMessage(response, "Feedback could not be applied."));
       const updated = await response.json() as PresentationDetail;
       applyDetail(updated, setDetail, setSlides, setSelectedNumber);
+      const editedNumbers = new Set(edits.map((edit) => edit.slideNumber));
       setDrafts((current) => {
         const next = { ...current };
-        edits.forEach(({ slideNumber }) => { delete next[slideNumber]; });
+        editedNumbers.forEach((slideNumber) => { delete next[slideNumber]; });
+        return next;
+      });
+      setCanvasEdits((current) => {
+        const next = { ...current };
+        editedNumbers.forEach((slideNumber) => { delete next[slideNumber]; });
         return next;
       });
     } catch (error) {
@@ -113,6 +126,11 @@ export function SlideEditor({ generationId }: { generationId: string }) {
       if (!response.ok) throw new Error(await responseMessage(response, "This slide could not be undone."));
       const updated = await response.json() as PresentationDetail;
       applyDetail(updated, setDetail, setSlides, setSelectedNumber);
+      setCanvasEdits((current) => {
+        const next = { ...current };
+        delete next[slideNumber];
+        return next;
+      });
     } catch (error) {
       setMutationError(error instanceof Error ? error.message : "This slide could not be undone.");
     } finally {
@@ -165,7 +183,7 @@ export function SlideEditor({ generationId }: { generationId: string }) {
   const editing = mutation === "edit";
   const mutating = mutation !== null;
   const undoAvailable = detail.undoableSlideNumbers.includes(selected.number);
-  const srcDoc = renderStructuredRevision({ animationRegistryVersion: detail.document?.animationRegistryVersion ?? 1, slides: [selected] });
+  const canvasEdit = canvasEdits[selected.number];
 
   return (
     <main className="mx-auto max-w-[94rem] px-4 py-7 sm:px-7 sm:py-10">
@@ -194,20 +212,25 @@ export function SlideEditor({ generationId }: { generationId: string }) {
             >
               <span className="font-mono text-xs">{String(index + 1).padStart(2, "0")}</span>
               <span className="mt-1 block truncate">{detail.outline?.slides[index]?.title || `Slide ${slide.number}`}</span>
-              {drafts[slide.number]?.trim() ? <span className="mt-2 block text-[10px] uppercase tracking-wide">Draft saved</span> : null}
+              {drafts[slide.number]?.trim() || canvasEdits[slide.number] ? <span className="mt-2 block text-[10px] uppercase tracking-wide">Draft saved</span> : null}
             </button>
           ))}
         </nav>
 
         <section className="order-1 min-w-0 lg:order-2">
-          <div className="overflow-hidden rounded-2xl border border-[var(--line)] bg-neutral-900 shadow-[0_18px_50px_rgba(23,23,19,0.16)]">
-            <iframe
-              className="aspect-video w-full bg-white"
-              sandbox="allow-same-origin"
-              srcDoc={srcDoc}
-              title={`Slide ${selected.number} preview`}
-            />
-          </div>
+          <SlideHtmlCanvas
+            chrome={{ blockPalette: false }}
+            css={canvasEdit?.css ?? selected.css}
+            disabled={editing}
+            html={canvasEdit?.html ?? selected.html}
+            key={selected.number}
+            onDirtyChange={(isDirty) => {
+              if (!isDirty) return;
+              const serialized = canvasRef.current?.serialize();
+              if (serialized) setCanvasEdits((current) => ({ ...current, [selected.number]: serialized }));
+            }}
+            ref={canvasRef}
+          />
           <div className="mt-4 flex items-center justify-between gap-3">
             <button className="ui-button ui-button-secondary" disabled={selectedIndex === 0 || editing} onClick={() => setSelectedNumber(slides[selectedIndex - 1].number)} type="button">Previous</button>
             <button className="ui-button ui-button-secondary" disabled={selectedIndex === slides.length - 1 || editing} onClick={() => setSelectedNumber(slides[selectedIndex + 1].number)} type="button">Next</button>
